@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "verilume"
+version = "0.1.0"
+description = "Local-first Streamlit RAG assistant with Chroma, Hugging Face generation, configurable web search, and exports."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Damian Mingo Ndiwago" }
+]
+keywords = ["rag", "streamlit", "chroma", "huggingface", "web-search"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: End Users/Desktop",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: MacOS",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "chromadb>=0.5.5",
+  "huggingface-hub>=0.24.0",
+  "pypdf>=4.2.0",
+  "python-docx>=1.1.2",
+  "python-dotenv>=1.0.1",
+  "reportlab>=4.2.2",
+  "requests>=2.32.3",
+  "sentence-transformers>=3.0.1",
+  "streamlit>=1.36.0",
+  "tavily-python>=0.5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/verilume/verilume"
+Repository = "https://github.com/verilume/verilume"
+Documentation = "https://docs.verilume.ai"
+Issues = "https://github.com/verilume/verilume/issues"
+
+[project.optional-dependencies]
+mac = ["pyinstaller>=6.10.0"]
+dev = [
+  "build>=1.2.1",
+  "ruff>=0.6.0",
+  "twine>=5.1.1",
+]
+
+[project.scripts]
+verilume = "verilume.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/verilume"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/.env.example",
+  "/.github",
+  "/CITATION.cff",
+  "/CHANGELOG.md",
+  "/CODE_OF_CONDUCT.md",
+  "/CONTRIBUTING.md",
+  "/Verilume.command",
+  "/LICENSE",
+  "/README.md",
+  "/ROADMAP.md",
+  "/SECURITY.md",
+  "/TODO.md",
+  "/launcher.py",
+  "/pyproject.toml",
+  "/scripts",
+  "/src",
+  "/tests",
+  "/vision.md",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

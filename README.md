@@ -1,6 +1,6 @@
-# Verilume Assistant
+# 📚🔎 Verilume
 
-[![CI](https://github.com/DamingoNdiwa/verilume--/actions/workflows/ci.yml/badge.svg)](https://github.com/DamingoNdiwa/verilume--/actions/workflows/ci.yml)
+[![CI](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml)
 
 Verilume is a local-first desktop Streamlit app for document question answering. It ingests local files into Chroma, generates answers through Hugging Face, optionally falls back to configurable web search, keeps local `[S1]` citations separate from web `[W1]` citations, and exports chats to Markdown or PDF.
 
@@ -30,7 +30,7 @@ verilume run
 ## Install From Source
 
 ```bash
-git clone git@github.com:DamingoNdiwa/verilume--.git
+git clone git@github.com:DamingoNdiwa/verilume.git
 cd verilume
 python3 -m venv .venv
 source .venv/bin/activate

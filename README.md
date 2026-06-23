@@ -1,20 +1,36 @@
 # 📚🔎 Verilume
 
 [![CI](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml)
+**The local-first evidence layer for private documents, web search, and AI reasoning.**
 
-Verilume is a local-first desktop Streamlit app for document question answering. It ingests local files into Chroma, generates answers through Hugging Face, optionally falls back to configurable web search, keeps local `[S1]` citations separate from web `[W1]` citations, and exports chats to Markdown or PDF.
+Verilume is a desktop RAG assistant that lets you ask questions across local documents, trusted web sources, and AI knowledge. It ranks evidence, separates local `[S1]` citations from web `[W1]` citations, reconciles conflicting sources, and exports chats to Markdown or PDF.
 
-The app is designed for non-programmers: launch it, enter tokens, upload documents, build the knowledge base, ask questions, and export the chat.
+Built for researchers, analysts, students, consultants, and non-programmers who need transparent answers from their own files and the web.
+
+## Why Verilume?
+
+Most RAG tools either search local files or the web. Verilume combines both, then ranks and reconciles the evidence before answering.
+
+It is designed to answer questions like:
+
+- What does this PDF say?
+- Is this information still current?
+- Do local documents disagree with recent web sources?
+- Which source supports this claim?
+- Can I export the full cited conversation?
 
 ## What It Does
-
-- Streamlit desktop-style frontend.
-- Local ingestion for PDF, DOCX, TXT, Markdown, and CSV.
-- Chroma vector database with incremental indexing.
-- Hugging Face model generation.
-- Optional web search through Tavily, DuckDuckGo, Brave Search, Exa, SerpAPI, Bing Search API, Google CSE, or a custom JSON endpoint.
-- Separate local and web citation sections.
-- Markdown and PDF chat exports.
+## Highlights
+- Local-first document question answering
+- PDF, DOCX, TXT, Markdown, and CSV ingestion
+- Chroma vector database with incremental indexing
+- Hugging Face and Ollama generation backends
+- Configurable web search providers
+- Evidence ranking and source confidence
+- Separate local and web citations
+- Conversation-aware query rewriting
+- Markdown and PDF chat export
+- Streamlit desktop interface
 - CLI commands for running, ingestion, stats, config, and health checks.
 - macOS launcher and `.app` build helper.
 

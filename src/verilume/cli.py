@@ -53,6 +53,20 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_streamlit() -> int:
     app_path = files("verilume").joinpath("app.py")
+    if getattr(sys, "frozen", False):
+        from streamlit.web.cli import main as streamlit_main
+
+        sys.argv = [
+            "streamlit",
+            "run",
+            str(app_path),
+            "--server.fileWatcherType",
+            "none",
+        ]
+        try:
+            return int(streamlit_main() or 0)
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 0
     try:
         process = subprocess.run(
             [

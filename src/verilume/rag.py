@@ -834,7 +834,6 @@ class VerilumeRAG:
                 question,
                 query_understanding,
             )
-            parallel_model_with_web = True
             diagnostics["parallel_model_with_web"] = not generation_error
             with ThreadPoolExecutor(max_workers=2) as executor:
                 web_future = executor.submit(

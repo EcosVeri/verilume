@@ -735,7 +735,6 @@ class DocumentIngestor:
         }
 
     def _restore_backup_snapshot(self, backup: dict[str, object]) -> None:
-        root = Path(str(backup["root"]))
         chroma_backup = Path(str(backup["chroma_dir"]))
         manifest_backup = Path(str(backup["manifest_path"]))
 

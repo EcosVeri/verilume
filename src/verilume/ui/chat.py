@@ -20,9 +20,9 @@ from verilume.utils.exporting import chat_to_markdown, chat_to_pdf
 from verilume.utils.formatting import (
     local_source_confidence,
     local_source_rows,
+    source_badge,
     source_confidence,
     web_source_rows,
-    web_source_type,
 )
 
 LOGGER = logging.getLogger(__name__)

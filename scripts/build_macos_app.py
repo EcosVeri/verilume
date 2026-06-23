@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from shutil import which
 from pathlib import Path
 
 
@@ -11,7 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
-    subprocess.run([sys.executable, "-m", "pip", "install", "-e", ".[mac]"], cwd=ROOT, check=True)
+    uv = which("uv")
+    if uv is None:
+        raise RuntimeError("uv is required to build the macOS app")
+
+    subprocess.run([uv, "pip", "install", "-e", ".[mac]"], cwd=ROOT, check=True)
     return subprocess.run(
         [
             sys.executable,
@@ -22,6 +27,12 @@ def main() -> int:
             "--windowed",
             "--noconfirm",
             "--clean",
+            "--copy-metadata",
+            "streamlit",
+            "--collect-data",
+            "streamlit",
+            "--add-data",
+            f"{ROOT / 'src' / 'verilume' / 'app.py'}:verilume",
             str(ROOT / "launcher.py"),
         ],
         cwd=ROOT,

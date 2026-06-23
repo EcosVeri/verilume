@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import asdict
 from importlib.resources import files
+from pathlib import Path
 
 from verilume.ingest import DocumentIngestor
 from verilume.rag import get_rag_service
@@ -54,12 +55,16 @@ def main(argv: list[str] | None = None) -> int:
 def run_streamlit() -> int:
     app_path = files("verilume").joinpath("app.py")
     if getattr(sys, "frozen", False):
+        _patch_streamlit_for_frozen_bundle()
+
         from streamlit.web.cli import main as streamlit_main
 
         sys.argv = [
             "streamlit",
             "run",
             str(app_path),
+            "--global.developmentMode",
+            "false",
             "--server.fileWatcherType",
             "none",
         ]
@@ -83,6 +88,40 @@ def run_streamlit() -> int:
         return process.returncode
     except KeyboardInterrupt:
         return 130
+
+
+def _patch_streamlit_for_frozen_bundle() -> None:
+    """Make Streamlit serve bundled frontend assets from a PyInstaller .app."""
+    from streamlit import config, development, file_util
+
+    static_dir = _find_frozen_resource("streamlit", "static")
+    if static_dir is not None:
+        file_util.get_static_dir = lambda: str(static_dir)
+
+    config.set_option("global.developmentMode", False)
+    development.is_development_mode = False
+
+
+def _find_frozen_resource(*parts: str) -> Path | None:
+    relative_path = Path(*parts)
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / relative_path)
+
+    executable = Path(sys.executable).resolve()
+    for parent in (executable.parent, *executable.parents):
+        if parent.name == "Contents":
+            candidates.extend(
+                [
+                    parent / "Resources" / relative_path,
+                    parent / "Frameworks" / relative_path,
+                ]
+            )
+            break
+
+    candidates.append(Path.cwd() / relative_path)
+    return next((path for path in candidates if path.exists()), None)
 
 
 def run_doctor(settings: AppSettings) -> int:

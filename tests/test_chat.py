@@ -10,6 +10,8 @@ from verilume.settings import AppSettings
 from verilume.ui.chat import (
     _answer_origin,
     _display_answer,
+    _evidence_badges,
+    _evidence_detail_rows,
     _format_timestamp,
     _group_web_source_rows,
     _history_bucket,
@@ -66,7 +68,9 @@ class ChatInteractionTests(unittest.TestCase):
         self.assertIn("_Timestamp: 2026-06-16 19:20_", markdown)
 
     def test_partition_message_history_keeps_recent_messages_visible(self) -> None:
-        archived_timestamp = (datetime.now().astimezone() - timedelta(days=4)).isoformat(timespec="seconds")
+        archived_timestamp = (datetime.now().astimezone() - timedelta(days=4)).isoformat(
+            timespec="seconds"
+        )
         messages = [
             {
                 "role": "assistant" if index % 2 else "user",
@@ -76,7 +80,9 @@ class ChatInteractionTests(unittest.TestCase):
             for index in range(12)
         ]
 
-        recent, archived = _partition_message_history(messages, archive_threshold=10, recent_count=6)
+        recent, archived = _partition_message_history(
+            messages, archive_threshold=10, recent_count=6
+        )
 
         self.assertEqual([index for index, _ in recent], [6, 7, 8, 9, 10, 11])
         self.assertEqual([index for index, _ in archived["Earlier"]], [0, 1, 2, 3, 4, 5])
@@ -183,7 +189,9 @@ class ChatInteractionTests(unittest.TestCase):
             confidence="model-only",
         )
 
-        self.assertEqual(_answer_origin(response), ("\U0001f9e0 AI Knowledge", "N/A", "Conversation"))
+        self.assertEqual(
+            _answer_origin(response), ("\U0001f9e0 AI Knowledge", "N/A", "Conversation")
+        )
 
     def test_answer_origin_keeps_confidence_for_non_conversational_greeting_topic(self) -> None:
         response = RAGResponse(
@@ -280,7 +288,9 @@ class ChatInteractionTests(unittest.TestCase):
         )
         self.assertEqual(_supporting_source_count(response), 2)
 
-    def test_answer_origin_uses_local_retrieval_for_local_grounded_answer_without_citations(self) -> None:
+    def test_answer_origin_uses_local_retrieval_for_local_grounded_answer_without_citations(
+        self,
+    ) -> None:
         response = RAGResponse(
             answer="According to the local context, model diagnostics checks model fit.",
             local_sources=[],
@@ -290,7 +300,9 @@ class ChatInteractionTests(unittest.TestCase):
             diagnostics={"local_sufficient": True},
         )
 
-        self.assertEqual(_answer_origin(response), ("\U0001f4c4 Local Retrieval", "High", "Document"))
+        self.assertEqual(
+            _answer_origin(response), ("\U0001f4c4 Local Retrieval", "High", "Document")
+        )
         self.assertEqual(_supporting_source_count(response), 1)
 
     def test_answer_origin_uses_local_retrieval_for_local_file_miss(self) -> None:
@@ -326,7 +338,50 @@ class ChatInteractionTests(unittest.TestCase):
             confidence="local-grounded",
         )
 
-        self.assertEqual(_answer_origin(response), ("\U0001f4c4 Local Retrieval", "Medium", "Document"))
+        self.assertEqual(
+            _answer_origin(response), ("\U0001f4c4 Local Retrieval", "Medium", "Document")
+        )
+
+    def test_evidence_badges_use_response_confidence_and_diagnostics(self) -> None:
+        response = RAGResponse(
+            answer="Current answer [W1]",
+            local_sources=[],
+            web_sources=[],
+            used_web=True,
+            confidence="current-information",
+            diagnostics={
+                "source_agreement": "high",
+                "local_is_older_than_web": True,
+                "evidence_winner": "web",
+            },
+        )
+
+        badges = _evidence_badges(response)
+
+        self.assertIn("Evidence: Current verified", badges)
+        self.assertIn("Agreement: High", badges)
+        self.assertIn("Freshness: newer web evidence", badges)
+        self.assertIn("Winner: Web", badges)
+
+    def test_evidence_detail_rows_show_requested_diagnostics(self) -> None:
+        response = RAGResponse(
+            answer="Answer",
+            local_sources=[],
+            web_sources=[],
+            used_web=False,
+            confidence="low",
+            diagnostics={
+                "evidence_note": "Local files win for private facts.",
+                "freshness_note": "Freshness was not decisive.",
+                "local_is_older_than_web": False,
+            },
+        )
+
+        rows = dict(_evidence_detail_rows(response))
+
+        self.assertEqual(rows["Evidence note"], "Local files win for private facts.")
+        self.assertEqual(rows["Freshness note"], "Freshness was not decisive.")
+        self.assertEqual(rows["Local older than web"], "No")
 
     def test_web_source_rows_are_grouped_by_source_type(self) -> None:
         rows = [

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from verilume.core.generation import HuggingFaceGenerator, OllamaGenerator, create_generator
 from verilume.settings import AppSettings, save_user_config
 
 
@@ -23,11 +24,23 @@ class AppSettingsTests(unittest.TestCase):
             web_search_provider="Brave Search",
             web_search_max_results=0,
             web_search_timeout_seconds=0,
+            web_search_cache_ttl_seconds=-1,
+            web_search_max_workers=0,
             tavily_max_results=0,
             tavily_timeout_seconds=0,
             retriever_k=0,
             max_history_turns=-2,
+            query_rewrite_min_history=-3,
+            query_rewrite_similarity_threshold=5,
             retrieval_score_threshold=4,
+            rrf_constant=0,
+            rrf_dense_weight=-1,
+            rrf_lexical_weight=-1,
+            rrf_semantic_boost=-1,
+            rrf_score_scale=-1,
+            rerank_mismatch_penalty=4,
+            confidence_high_threshold=4,
+            confidence_medium_threshold=-1,
             answer_style="academic",
         )
 
@@ -42,11 +55,23 @@ class AppSettingsTests(unittest.TestCase):
         self.assertEqual(settings.web_search_provider, "brave")
         self.assertEqual(settings.web_search_max_results, 1)
         self.assertEqual(settings.web_search_timeout_seconds, 5.0)
+        self.assertEqual(settings.web_search_cache_ttl_seconds, 0.0)
+        self.assertEqual(settings.web_search_max_workers, 1)
         self.assertEqual(settings.tavily_max_results, 1)
         self.assertEqual(settings.tavily_timeout_seconds, 5.0)
         self.assertEqual(settings.retriever_k, 1)
         self.assertEqual(settings.max_history_turns, 0)
+        self.assertEqual(settings.query_rewrite_min_history, 0)
+        self.assertEqual(settings.query_rewrite_similarity_threshold, 1.0)
         self.assertEqual(settings.retrieval_score_threshold, 1.0)
+        self.assertEqual(settings.rrf_constant, 1)
+        self.assertEqual(settings.rrf_dense_weight, 0.0)
+        self.assertEqual(settings.rrf_lexical_weight, 0.0)
+        self.assertEqual(settings.rrf_semantic_boost, 0.0)
+        self.assertEqual(settings.rrf_score_scale, 0.0)
+        self.assertEqual(settings.rerank_mismatch_penalty, 1.0)
+        self.assertEqual(settings.confidence_high_threshold, 1.0)
+        self.assertEqual(settings.confidence_medium_threshold, 0.0)
         self.assertEqual(settings.answer_style, "Research")
 
     def test_web_provider_secrets_are_masked(self) -> None:
@@ -93,3 +118,26 @@ class AppSettingsTests(unittest.TestCase):
         self.assertIn('WEB_SEARCH_PROVIDER="brave"', content)
         self.assertIn('BRAVE_API_KEY="brave-secret"', content)
         self.assertIn('ANSWER_STYLE="Short"', content)
+
+    def test_hugging_face_backend_is_selected(self) -> None:
+        settings = AppSettings(
+            generation_backend="huggingface",
+            hf_token="token",
+            hf_llm_model="Qwen/Qwen2.5-7B-Instruct",
+        )
+
+        generator = create_generator(settings)
+
+        self.assertIsInstance(generator, HuggingFaceGenerator)
+        self.assertEqual(settings.active_generation_model(), "Qwen/Qwen2.5-7B-Instruct")
+
+    def test_ollama_backend_is_selected(self) -> None:
+        settings = AppSettings(
+            generation_backend="ollama",
+            ollama_model="llama3.2:3b",
+        )
+
+        generator = create_generator(settings)
+
+        self.assertIsInstance(generator, OllamaGenerator)
+        self.assertEqual(settings.active_generation_model(), "llama3.2:3b")

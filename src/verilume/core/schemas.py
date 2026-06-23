@@ -43,6 +43,9 @@ class RAGResponse:
     used_web: bool
     confidence: str
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    conversation_state: Any | None = None
+    resolved_query: str | None = None
+    original_query: str | None = None
 
 
 @dataclass(slots=True)

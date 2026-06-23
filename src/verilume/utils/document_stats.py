@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pypdf import PdfReader
-
 from verilume.ingest import SUPPORTED_EXTENSIONS, load_manifest, supported_files
 from verilume.settings import AppSettings
 
@@ -34,6 +32,8 @@ def collect_document_stats(settings: AppSettings) -> dict[str, int]:
 
 def _count_pdf_pages(path: Path) -> int:
     try:
+        from pypdf import PdfReader
+
         return len(PdfReader(str(path)).pages)
     except Exception:
         return 0

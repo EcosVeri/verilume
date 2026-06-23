@@ -1,15 +1,19 @@
-"""Sidebar controls."""
+"""Sidebar controls for Verilume."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
+from typing import Any
 
 import streamlit as st
 
+from verilume.ingest import supported_extensions
 from verilume.settings import (
     ANSWER_STYLE_CHOICES,
-    DEFAULT_MODEL_CHOICES,
-    WEB_SEARCH_API_KEY_FIELDS,
+    DEFAULT_HF_MODEL_CHOICES,
+    DEFAULT_OLLAMA_MODEL_CHOICES,
+    GENERATION_BACKEND_LABELS,
     WEB_SEARCH_PROVIDER_LABELS,
     AppSettings,
     save_user_config,
@@ -19,109 +23,185 @@ from verilume.settings import (
 @dataclass(slots=True)
 class SidebarState:
     settings: AppSettings
-    uploaded_files: list
+    uploaded_files: list[Any]
     build_clicked: bool
     reset_clicked: bool
 
 
-def render_sidebar(base_settings: AppSettings, stats: dict[str, int]) -> SidebarState:
+def render_sidebar(
+    base_settings: AppSettings,
+    stats: dict[str, int],
+) -> SidebarState:
     with st.sidebar:
-        st.markdown('<div class="veri-side-brand">Verilume</div>', unsafe_allow_html=True)
-        st.subheader("Verilume Studio")
-        focused_section = st.session_state.pop("focus_sidebar_section", "")
-        if "custom_model" not in st.session_state:
-            st.session_state.custom_model = ""
-        with st.expander(
-            "Models",
-            expanded=focused_section == "models" or not base_settings.hf_token,
-        ):
-            hf_token = st.text_input(
-                "Hugging Face token",
-                value=st.session_state.get("hf_token", base_settings.hf_token),
-                type="password",
+        st.markdown('<div class="veri-sidebar-brand">VERILUME</div>', unsafe_allow_html=True)
+        st.markdown("### Verilume Studio")
+
+        uploaded_files: list[Any] = []
+        build_clicked = False
+        reset_clicked = False
+
+        overrides: dict[str, Any] = {}
+
+        # -------------------------
+        # Models
+        # -------------------------
+
+        models_expanded = _section_expanded("models", default=False)
+
+        with st.expander("Models", expanded=models_expanded):
+            backend_options = list(GENERATION_BACKEND_LABELS.keys())
+            backend_labels = [GENERATION_BACKEND_LABELS[key] for key in backend_options]
+
+            current_backend = base_settings.generation_backend
+            backend_index = (
+                backend_options.index(current_backend) if current_backend in backend_options else 0
             )
-            st.session_state.hf_token = hf_token
 
-            options = list(dict.fromkeys([base_settings.hf_llm_model, *DEFAULT_MODEL_CHOICES]))
-            selected_index = options.index(base_settings.hf_llm_model) if base_settings.hf_llm_model in options else 0
-            model_choice = st.selectbox("Hugging Face model", options=options, index=selected_index)
-            custom_model = st.text_input("Custom model", key="custom_model")
+            selected_backend_label = st.selectbox(
+                "Generation backend",
+                options=backend_labels,
+                index=backend_index,
+            )
 
-            hf_model = model_choice
-            if custom_model.strip():
-                if _is_valid_hf_model_id(custom_model.strip()):
-                    hf_model = custom_model.strip()
-                else:
-                    st.warning("Custom model must be a Hugging Face model ID like owner/model-name.")
+            selected_backend = backend_options[backend_labels.index(selected_backend_label)]
+            overrides["generation_backend"] = selected_backend
 
-        provider_ids = list(WEB_SEARCH_PROVIDER_LABELS)
-        provider_labels = [WEB_SEARCH_PROVIDER_LABELS[provider] for provider in provider_ids]
-        current_provider = base_settings.web_search_provider
-        provider_index = provider_ids.index(current_provider) if current_provider in provider_ids else 0
-        with st.expander("Search", expanded=focused_section == "search"):
-            enable_web = st.toggle("Web search", value=base_settings.enable_web_search)
-            provider_label = st.selectbox(
+            if selected_backend == "huggingface":
+                overrides.update(_render_huggingface_settings(base_settings))
+            else:
+                overrides.update(_render_ollama_settings(base_settings))
+
+        # -------------------------
+        # Search
+        # -------------------------
+
+        search_expanded = _section_expanded("search", default=False)
+
+        with st.expander("Search", expanded=search_expanded):
+            enable_web_search = st.toggle(
+                "Web search",
+                value=base_settings.enable_web_search,
+            )
+
+            provider_keys = list(WEB_SEARCH_PROVIDER_LABELS.keys())
+            provider_labels = [WEB_SEARCH_PROVIDER_LABELS[key] for key in provider_keys]
+
+            current_provider = base_settings.web_search_provider
+            provider_index = (
+                provider_keys.index(current_provider) if current_provider in provider_keys else 0
+            )
+
+            selected_provider_label = st.selectbox(
                 "Web search provider",
                 options=provider_labels,
                 index=provider_index,
             )
-            web_search_provider = provider_ids[provider_labels.index(provider_label)]
-            web_search_overrides = _render_web_provider_fields(web_search_provider, base_settings)
 
-        with st.expander(
-            "Documents",
-            expanded=focused_section == "documents" or not stats.get("uploaded_documents", 0),
-        ):
+            selected_provider = provider_keys[provider_labels.index(selected_provider_label)]
+
+            overrides["enable_web_search"] = enable_web_search
+            overrides["web_search_provider"] = selected_provider
+
+            overrides.update(_render_web_provider_settings(base_settings, selected_provider))
+
+            web_search_max_results = st.slider(
+                "Web results",
+                min_value=1,
+                max_value=10,
+                value=base_settings.web_search_max_results,
+            )
+
+            web_search_timeout_seconds = st.slider(
+                "Web timeout seconds",
+                min_value=5,
+                max_value=60,
+                value=int(base_settings.web_search_timeout_seconds),
+            )
+
+            overrides["web_search_max_results"] = web_search_max_results
+            overrides["web_search_timeout_seconds"] = float(web_search_timeout_seconds)
+
+        # -------------------------
+        # Documents
+        # -------------------------
+
+        docs_expanded = _section_expanded("documents", default=False)
+
+        with st.expander("Documents", expanded=docs_expanded):
             st.markdown(
                 """
-<div class="veri-upload-card">
-  <div class="veri-upload-title">Build your knowledge base</div>
-  <div class="veri-upload-grid">
-    <div>
-      <div class="veri-upload-label">Supported</div>
-      <div class="veri-upload-value">PDF • DOCX • TXT • MD • CSV</div>
-    </div>
-    <div>
-      <div class="veri-upload-label">Maximum size</div>
-      <div class="veri-upload-value">200 MB per file</div>
-    </div>
-  </div>
+<div class="veri-upload-info">
+  <strong>Build your knowledge base</strong><br><br>
+  <span>Supported</span><br>
+  PDF · DOCX · TXT · MD · CSV<br><br>
+  <span>Maximum size</span><br>
+  200 MB per file
 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+            upload_types = sorted(extension.lstrip(".") for extension in supported_extensions())
             uploaded_files = st.file_uploader(
-                "Build your knowledge base",
-                type=["pdf", "txt", "md", "markdown", "csv", "docx"],
+                "Upload documents",
+                type=upload_types,
                 accept_multiple_files=True,
                 label_visibility="collapsed",
             )
 
             col_a, col_b = st.columns(2)
+
             with col_a:
-                build_clicked = st.button("Build KB", type="primary", use_container_width=True)
+                build_clicked = st.button(
+                    "Build KB",
+                    width="stretch",
+                )
+
             with col_b:
-                reset_clicked = st.button("Reset DB", use_container_width=True)
+                reset_clicked = st.button(
+                    "Reset DB",
+                    width="stretch",
+                )
 
             st.caption("Library snapshot")
-            c1, c2 = st.columns(2)
-            c1.metric("Documents", stats.get("uploaded_documents", 0))
-            c2.metric("PDF pages", stats.get("pdf_pages", 0))
-            c3, c4 = st.columns(2)
-            c3.metric("Chunks", stats.get("chunks_indexed", 0))
-            c4.metric("Types", stats.get("supported_types", 0))
 
-        with st.expander("Retrieval", expanded=focused_section == "retrieval"):
-            answer_style_index = ANSWER_STYLE_CHOICES.index(base_settings.answer_style)
+            col_1, col_2 = st.columns(2)
+            col_1.metric("Documents", stats.get("uploaded_documents", 0))
+            col_2.metric("PDF pages", stats.get("pdf_pages", 0))
+
+            col_3, col_4 = st.columns(2)
+            col_3.metric("Chunks", stats.get("chunks_indexed", 0))
+            col_4.metric("Types", stats.get("file_types", 0))
+
+        # -------------------------
+        # Retrieval
+        # -------------------------
+
+        retrieval_expanded = _section_expanded("retrieval", default=False)
+
+        with st.expander("Retrieval", expanded=retrieval_expanded):
             answer_style = st.radio(
                 "Answer style",
-                options=ANSWER_STYLE_CHOICES,
-                index=answer_style_index,
+                options=list(ANSWER_STYLE_CHOICES),
+                index=list(ANSWER_STYLE_CHOICES).index(base_settings.answer_style)
+                if base_settings.answer_style in ANSWER_STYLE_CHOICES
+                else 1,
                 horizontal=True,
             )
-            show_local = st.toggle("Show local citations", value=base_settings.show_local_sources)
-            retriever_k = st.slider("Retriever K", min_value=2, max_value=12, value=base_settings.retriever_k)
-            threshold = st.slider(
+
+            show_local_sources = st.toggle(
+                "Show local citations",
+                value=base_settings.show_local_sources,
+            )
+
+            retriever_k = st.slider(
+                "Retriever K",
+                min_value=2,
+                max_value=12,
+                value=base_settings.retriever_k,
+            )
+
+            retrieval_score_threshold = st.slider(
                 "Score threshold",
                 min_value=0.0,
                 max_value=0.95,
@@ -129,107 +209,270 @@ def render_sidebar(base_settings: AppSettings, stats: dict[str, int]) -> Sidebar
                 step=0.05,
             )
 
-        config_settings = base_settings.with_overrides(
-            hf_token=hf_token.strip(),
-            hf_llm_model=hf_model,
-            web_search_provider=web_search_provider,
-            enable_web_search=enable_web,
-            answer_style=answer_style,
-            show_local_sources=show_local,
-            retriever_k=retriever_k,
-            retrieval_score_threshold=threshold,
-            **web_search_overrides,
-        )
-        if st.button("Save settings", type="primary", use_container_width=True):
-            path = save_user_config(config_settings)
-            st.success(f"Configuration saved to {path}")
+            enable_query_rewrite = st.toggle(
+                "Query rewriting",
+                value=base_settings.enable_query_rewrite,
+            )
 
-    settings = base_settings.with_overrides(
-        hf_token=hf_token.strip(),
-        hf_llm_model=hf_model,
-        web_search_provider=web_search_provider,
-        enable_web_search=enable_web,
-        answer_style=answer_style,
-        show_local_sources=show_local,
-        retriever_k=retriever_k,
-        retrieval_score_threshold=threshold,
-        **web_search_overrides,
+            overrides["answer_style"] = answer_style
+            overrides["show_local_sources"] = show_local_sources
+            overrides["retriever_k"] = retriever_k
+            overrides["retrieval_score_threshold"] = retrieval_score_threshold
+            overrides["enable_query_rewrite"] = enable_query_rewrite
+
+        settings = base_settings.with_overrides(**overrides)
+
+        if st.button("Save settings", width="stretch"):
+            save_user_config(settings)
+            st.success("Settings saved.")
+            st.rerun()
+
+        return SidebarState(
+            settings=settings,
+            uploaded_files=uploaded_files or [],
+            build_clicked=build_clicked,
+            reset_clicked=reset_clicked,
+        )
+
+
+def _section_expanded(section: str, default: bool) -> bool:
+    focused = st.session_state.pop("focus_sidebar_section", None)
+
+    if focused == section:
+        return True
+
+    return default
+
+
+def _render_huggingface_settings(base_settings: AppSettings) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+
+    hf_token = st.text_input(
+        "Hugging Face token",
+        value=base_settings.hf_token,
+        type="password",
     )
-    return SidebarState(
-        settings=settings,
-        uploaded_files=uploaded_files or [],
-        build_clicked=build_clicked,
-        reset_clicked=reset_clicked,
+
+    model_options = DEFAULT_HF_MODEL_CHOICES
+
+    current_model = base_settings.hf_llm_model
+    model_index = model_options.index(current_model) if current_model in model_options else 0
+
+    selected_model = st.selectbox(
+        "Hugging Face model",
+        options=model_options,
+        index=model_index,
     )
 
+    custom_model = st.text_input(
+        "Custom Hugging Face model",
+        value="" if current_model in model_options else current_model,
+        placeholder="organisation/model-name",
+    )
 
-def _render_web_provider_fields(provider: str, settings: AppSettings) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    key_field = WEB_SEARCH_API_KEY_FIELDS.get(provider)
+    active_model = custom_model.strip() or selected_model
 
-    if provider == "duckduckgo":
-        st.caption("DuckDuckGo Instant Answer does not require an API key.")
-        return overrides
+    hf_provider = st.text_input(
+        "HF provider",
+        value=base_settings.hf_provider,
+        help="Use 'auto' unless you know the provider name.",
+    )
 
-    if provider == "custom":
-        custom_provider = _plain_input(
-            "Custom provider",
-            "custom_web_search_provider",
-            settings.custom_web_search_provider,
-        )
-        custom_endpoint = _plain_input(
-            "Custom search endpoint",
-            "custom_web_search_endpoint",
-            settings.custom_web_search_endpoint,
-        )
-        custom_key = _secret_input(
-            "Web search API key",
-            "custom_web_search_api_key",
-            settings.custom_web_search_api_key,
-        )
-        overrides["custom_web_search_provider"] = custom_provider.strip()
-        overrides["custom_web_search_endpoint"] = custom_endpoint.strip()
-        overrides["custom_web_search_api_key"] = custom_key.strip()
-        return overrides
+    hf_temperature = st.slider(
+        "HF temperature",
+        min_value=0.0,
+        max_value=1.5,
+        value=float(base_settings.hf_temperature),
+        step=0.05,
+    )
 
-    if key_field:
-        api_key = _secret_input(
-            "Web search API key",
-            key_field,
-            str(getattr(settings, key_field, "") or ""),
-        )
-        overrides[key_field] = api_key.strip()
+    hf_max_new_tokens = st.slider(
+        "HF max tokens",
+        min_value=128,
+        max_value=4096,
+        value=int(base_settings.hf_max_new_tokens),
+        step=64,
+    )
 
-    if provider == "google_cse":
-        cse_id = _plain_input("Google CSE ID", "google_cse_id", settings.google_cse_id)
-        overrides["google_cse_id"] = cse_id.strip()
+    overrides["hf_token"] = hf_token
+    overrides["hf_llm_model"] = active_model
+    overrides["hf_provider"] = hf_provider
+    overrides["hf_temperature"] = hf_temperature
+    overrides["hf_max_new_tokens"] = hf_max_new_tokens
+
+    _render_active_model_panel("Active Hugging Face model", active_model)
 
     return overrides
 
 
-def _secret_input(label: str, state_key: str, default: str) -> str:
-    if state_key not in st.session_state:
-        st.session_state[state_key] = default
-    return st.text_input(label, type="password", key=state_key)
+def _render_ollama_settings(base_settings: AppSettings) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+
+    ollama_base_url = st.text_input(
+        "Ollama base URL",
+        value=base_settings.ollama_base_url,
+        placeholder="http://localhost:11434",
+    )
+
+    model_options = DEFAULT_OLLAMA_MODEL_CHOICES
+
+    current_model = base_settings.ollama_model
+    model_index = model_options.index(current_model) if current_model in model_options else 0
+
+    selected_model = st.selectbox(
+        "Ollama model",
+        options=model_options,
+        index=model_index,
+    )
+
+    custom_model = st.text_input(
+        "Custom Ollama model",
+        value="" if current_model in model_options else current_model,
+        placeholder="llama3.1:8b",
+    )
+
+    active_model = custom_model.strip() or selected_model
+
+    ollama_temperature = st.slider(
+        "Ollama temperature",
+        min_value=0.0,
+        max_value=1.5,
+        value=float(base_settings.ollama_temperature),
+        step=0.05,
+    )
+
+    ollama_num_predict = st.slider(
+        "Ollama max tokens",
+        min_value=128,
+        max_value=4096,
+        value=int(base_settings.ollama_num_predict),
+        step=64,
+    )
+
+    ollama_timeout_seconds = st.slider(
+        "Ollama timeout seconds",
+        min_value=10,
+        max_value=300,
+        value=int(base_settings.ollama_timeout_seconds),
+        step=10,
+    )
+
+    overrides["ollama_base_url"] = ollama_base_url
+    overrides["ollama_model"] = active_model
+    overrides["ollama_temperature"] = ollama_temperature
+    overrides["ollama_num_predict"] = ollama_num_predict
+    overrides["ollama_timeout_seconds"] = float(ollama_timeout_seconds)
+
+    _render_active_model_panel("Active Ollama model", active_model)
+
+    return overrides
 
 
-def _plain_input(label: str, state_key: str, default: str) -> str:
-    if state_key not in st.session_state:
-        st.session_state[state_key] = default
-    return st.text_input(label, key=state_key)
+def _render_active_model_panel(label: str, model: str) -> None:
+    st.markdown(
+        _active_model_html(label, model),
+        unsafe_allow_html=True,
+    )
 
 
-def _is_valid_hf_model_id(model_id: str) -> bool:
-    parts = model_id.strip().split("/")
-    if not 1 <= len(parts) <= 2:
-        return False
-    return all(_is_valid_hf_model_part(part) for part in parts)
+def _active_model_html(label: str, model: str) -> str:
+    return (
+        '<div class="veri-active-model">'
+        f'<div class="veri-active-model-label">{escape(label)}</div>'
+        f'<div class="veri-active-model-name">{escape(model)}</div>'
+        "</div>"
+    )
 
 
-def _is_valid_hf_model_part(value: str) -> bool:
-    if not value or len(value) > 96:
-        return False
-    if value[0] in {"-", "."} or value[-1] in {"-", "."}:
-        return False
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    return all(char in allowed for char in value)
+def _render_web_provider_settings(
+    base_settings: AppSettings,
+    provider: str,
+) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+
+    if provider == "duckduckgo":
+        st.caption("DuckDuckGo does not require an API key.")
+        return overrides
+
+    if provider == "tavily":
+        overrides["tavily_api_key"] = st.text_input(
+            "Web search API key",
+            value=base_settings.tavily_api_key,
+            type="password",
+        )
+        return overrides
+
+    if provider == "brave":
+        overrides["brave_api_key"] = st.text_input(
+            "Brave API key",
+            value=base_settings.brave_api_key,
+            type="password",
+        )
+        return overrides
+
+    if provider == "exa":
+        overrides["exa_api_key"] = st.text_input(
+            "Exa API key",
+            value=base_settings.exa_api_key,
+            type="password",
+        )
+        return overrides
+
+    if provider == "serpapi":
+        overrides["serpapi_api_key"] = st.text_input(
+            "SerpAPI key",
+            value=base_settings.serpapi_api_key,
+            type="password",
+        )
+        return overrides
+
+    if provider == "bing":
+        overrides["bing_api_key"] = st.text_input(
+            "Bing API key",
+            value=base_settings.bing_api_key,
+            type="password",
+        )
+        return overrides
+
+    if provider == "google_cse":
+        overrides["google_cse_api_key"] = st.text_input(
+            "Google CSE API key",
+            value=base_settings.google_cse_api_key,
+            type="password",
+        )
+
+        overrides["google_cse_id"] = st.text_input(
+            "Google CSE ID",
+            value=base_settings.google_cse_id,
+            type="password",
+        )
+
+        return overrides
+
+    if provider == "custom":
+        overrides["custom_web_search_provider"] = st.text_input(
+            "Custom provider name",
+            value=base_settings.custom_web_search_provider,
+            placeholder="My Search Provider",
+        )
+
+        overrides["custom_web_search_endpoint"] = st.text_input(
+            "Custom endpoint",
+            value=base_settings.custom_web_search_endpoint,
+            placeholder="https://api.example.com/search?q={query}&key={api_key}",
+        )
+
+        overrides["custom_web_search_api_key"] = st.text_input(
+            "Custom API key",
+            value=base_settings.custom_web_search_api_key,
+            type="password",
+        )
+
+        st.caption(
+            "Endpoint may use `{query}` and `{api_key}` placeholders. "
+            "If `{query}` is absent, Verilume sends `?q=<query>`."
+        )
+
+        return overrides
+
+    return overrides

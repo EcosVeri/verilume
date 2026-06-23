@@ -17,6 +17,7 @@ from verilume.utils.document_stats import collect_document_stats
 from verilume.utils.logging import configure_logging
 
 LOGGER = logging.getLogger(__name__)
+ACTIVE_SETTINGS_KEY = "_verilume_active_settings"
 
 
 def main() -> None:
@@ -34,13 +35,15 @@ def main() -> None:
     if not _password_ok(base_settings):
         return
 
-    stats = collect_document_stats(base_settings)
+    stats = _collect_document_stats_cached(base_settings)
     sidebar = render_sidebar(base_settings, stats)
+    _clear_rag_cache_if_settings_changed(sidebar.settings)
     _handle_ingestion(sidebar)
 
-    stats = collect_document_stats(sidebar.settings)
+    stats = _collect_document_stats_cached(sidebar.settings)
     render_header(sidebar.settings, stats)
     _render_metrics(stats)
+    _render_empty_document_state(stats)
     render_chat(sidebar.settings)
 
 
@@ -84,11 +87,28 @@ def _handle_ingestion(sidebar: SidebarState) -> None:
                 f"skipped {result.files_skipped} unchanged files."
             )
             get_rag_service.cache_clear()
+            _collect_document_stats_cached.clear()
             status.update(label="Knowledge base ready", state="complete")
         except Exception:
             LOGGER.exception("Knowledge base build failed.")
-            st.error("The knowledge base build failed. Please check the terminal logs and try again.")
+            st.error(
+                "The knowledge base build failed. Please check the terminal logs and try again."
+            )
             status.update(label="Knowledge base build failed", state="error")
+
+
+def _clear_rag_cache_if_settings_changed(settings: AppSettings) -> None:
+    previous_settings = st.session_state.get(ACTIVE_SETTINGS_KEY)
+    if previous_settings == settings:
+        return
+
+    get_rag_service.cache_clear()
+    st.session_state[ACTIVE_SETTINGS_KEY] = settings
+
+
+@st.cache_data(ttl=60)
+def _collect_document_stats_cached(settings: AppSettings) -> dict[str, int]:
+    return collect_document_stats(settings)
 
 
 def _render_metrics(stats: dict[str, int]) -> None:
@@ -96,6 +116,23 @@ def _render_metrics(stats: dict[str, int]) -> None:
     col1.metric("Uploaded documents", stats.get("uploaded_documents", 0))
     col2.metric("PDF pages", stats.get("pdf_pages", 0))
     col3.metric("Chunks indexed", stats.get("chunks_indexed", 0))
+
+
+def _render_empty_document_state(stats: dict[str, int]) -> None:
+    if stats.get("uploaded_documents", 0) > 0:
+        return
+    st.markdown(
+        """
+<div class="veri-empty-state">
+  <div class="veri-empty-state-title">No local documents indexed yet</div>
+  <div class="veri-empty-state-body">
+    Upload documents in the sidebar to ground answers in your own files.
+    Web research and model knowledge remain available when configured.
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

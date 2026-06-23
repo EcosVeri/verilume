@@ -106,6 +106,35 @@ h1, h2, h3 {
   color: var(--veri-amber);
 }
 
+.veri-active-model {
+  border: 1px solid rgba(54, 209, 196, .34);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(54, 209, 196, .12), rgba(20, 23, 29, .92));
+  margin: .75rem 0 .25rem 0;
+  padding: .68rem .72rem;
+}
+
+.veri-active-model-label {
+  color: var(--veri-teal);
+  font-size: .72rem;
+  font-weight: 820;
+  letter-spacing: .06rem;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.veri-active-model-name {
+  color: var(--veri-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .82rem;
+  font-weight: 740;
+  line-height: 1.35;
+  margin-top: .38rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .veri-title {
   margin-top: .24rem;
   font-size: 2rem;
@@ -252,6 +281,26 @@ h1, h2, h3 {
   padding-left: 0;
 }
 
+.veri-evidence-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  margin: -.25rem 0 .85rem 0;
+}
+
+.veri-evidence-badges span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(255, 200, 87, .24);
+  border-radius: 999px;
+  background: rgba(255, 200, 87, .08);
+  color: #ffe3a3;
+  font-size: .76rem;
+  font-weight: 720;
+  line-height: 1.2;
+  padding: .3rem .55rem;
+}
+
 .veri-history-label {
   margin: 1rem 0 .65rem 0;
   color: var(--veri-muted);
@@ -267,6 +316,52 @@ h1, h2, h3 {
   font-weight: 760;
   margin: .85rem 0 .45rem 0;
   padding-top: .65rem;
+}
+
+.veri-inline-source-heading-local {
+  color: #6ee7a8;
+}
+
+.veri-inline-source-heading-web {
+  color: #7cc7ff;
+}
+
+.veri-source-section {
+  border-left: 3px solid var(--veri-amber);
+  color: var(--veri-text);
+  font-size: .9rem;
+  font-weight: 780;
+  letter-spacing: .01rem;
+  margin: .9rem 0 .45rem 0;
+  padding: .18rem 0 .18rem .65rem;
+}
+
+.veri-source-section-local {
+  border-left-color: #6ee7a8;
+}
+
+.veri-source-section-web {
+  border-left-color: #7cc7ff;
+}
+
+.veri-empty-state {
+  border: 1px solid rgba(54, 209, 196, .22);
+  border-radius: 8px;
+  background: rgba(54, 209, 196, .055);
+  margin: .7rem 0 1rem 0;
+  padding: .85rem .95rem;
+}
+
+.veri-empty-state-title {
+  color: var(--veri-text);
+  font-weight: 780;
+  margin-bottom: .25rem;
+}
+
+.veri-empty-state-body {
+  color: var(--veri-muted);
+  font-size: .9rem;
+  line-height: 1.45;
 }
 
 .veri-recommendation-card {

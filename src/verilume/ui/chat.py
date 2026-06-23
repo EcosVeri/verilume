@@ -6,11 +6,13 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from html import escape
 from typing import Any
+from urllib.parse import quote
 
 import streamlit as st
-import streamlit.components.v1 as components
 
+from verilume.core.conversation_context import ConversationState
 from verilume.core.schemas import ChatMessage, RAGResponse
 from verilume.rag import GenerationStopped, get_rag_service
 from verilume.settings import AppSettings
@@ -29,6 +31,14 @@ ARCHIVE_MESSAGE_THRESHOLD = 10
 RECENT_MESSAGE_COUNT = 6
 HISTORY_BUCKETS = ("Today", "Yesterday", "Earlier")
 
+# Neutral Material avatars keep the chat focused and avoid loud emoji badges.
+USER_ICON = ":material/account_circle:"
+ASSISTANT_ICON = ":material/auto_awesome:"
+ANSWER_HEADER = "Verilume Findings"
+EVIDENCE_HEADER = "Evidence Analysis"
+LOCAL_SOURCES_HEADER = "Document Citations"
+WEB_SOURCES_HEADER = "Web Evidence"
+
 
 def init_chat_state() -> None:
     if "messages" not in st.session_state:
@@ -39,6 +49,8 @@ def init_chat_state() -> None:
         st.session_state.stop_requested = False
     if "regenerate_requested" not in st.session_state:
         st.session_state.regenerate_requested = False
+    if "conversation_state" not in st.session_state:
+        st.session_state.conversation_state = ConversationState()
 
 
 def render_chat(settings: AppSettings) -> None:
@@ -56,15 +68,14 @@ def render_chat(settings: AppSettings) -> None:
         _generate_assistant_response(settings, regenerate_prompt)
         return
 
-    prompt = st.chat_input("Ask Verilume")
+    prompt = st.chat_input("Ask Verilume anything...")
     if not prompt:
         return
-    if len(prompt.strip().split()) < 2:
-        st.warning("Please enter a fuller question so the assistant has something to work with.")
-        return
 
-    st.session_state.messages.append({"role": "user", "content": prompt, "timestamp": _now_timestamp()})
-    with st.chat_message("user"):
+    st.session_state.messages.append(
+        {"role": "user", "content": prompt, "timestamp": _now_timestamp()}
+    )
+    with st.chat_message("user", avatar=USER_ICON):
         st.markdown(prompt)
 
     _generate_assistant_response(settings, prompt)
@@ -72,18 +83,20 @@ def render_chat(settings: AppSettings) -> None:
 
 def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
     history = _history_from_messages(st.session_state.messages[:-1])
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=ASSISTANT_ICON):
         placeholder = st.empty()
         st.session_state.generating = True
         st.session_state.stop_requested = False
         try:
             with st.status("Evidence collection", expanded=False) as status:
+
                 def update_stage(label: str) -> None:
                     status.write(label)
 
                 response = get_rag_service(settings).ask(
                     prompt,
                     history,
+                    conversation_state=st.session_state.conversation_state,
                     should_stop=lambda: st.session_state.stop_requested,
                     on_stage=update_stage,
                 )
@@ -95,6 +108,8 @@ def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
                 "response": response,
                 "timestamp": _now_timestamp(),
             }
+            if response.conversation_state is not None:
+                st.session_state.conversation_state = response.conversation_state
             _render_assistant_meta(assistant_message, len(st.session_state.messages))
             _render_answer(response, f"live-{len(st.session_state.messages)}")
             _render_sources(response, settings)
@@ -134,7 +149,7 @@ def _render_toolbar(settings: AppSettings) -> None:
     can_regenerate = _latest_user_index(st.session_state.messages) is not None
     col_a, col_b, col_c, col_d, col_e = st.columns([1.1, 1.2, 0.8, 1, 2])
     with col_a:
-        if st.button("\u23f9 Stop response", use_container_width=True):
+        if st.button("\u23f9 Stop response", width="stretch"):
             st.session_state.stop_requested = True
             if st.session_state.generating:
                 st.warning("Stop requested. The current provider call will finish this turn.")
@@ -142,13 +157,14 @@ def _render_toolbar(settings: AppSettings) -> None:
         if st.button(
             "Regenerate response",
             disabled=st.session_state.generating or not can_regenerate,
-            use_container_width=True,
+            width="stretch",
         ):
             st.session_state.regenerate_requested = True
             st.rerun()
     with col_c:
-        if st.button("Clear", use_container_width=True):
+        if st.button("Clear", width="stretch"):
             st.session_state.messages = []
+            st.session_state.conversation_state = ConversationState()
             st.rerun()
     markdown = chat_to_markdown(st.session_state.messages, settings.app_title)
     with col_d:
@@ -157,7 +173,7 @@ def _render_toolbar(settings: AppSettings) -> None:
             data=markdown,
             file_name="verilume-chat.md",
             mime="text/markdown",
-            use_container_width=True,
+            width="stretch",
         )
     with col_e:
         try:
@@ -167,7 +183,7 @@ def _render_toolbar(settings: AppSettings) -> None:
                 data=pdf,
                 file_name="verilume-chat.pdf",
                 mime="application/pdf",
-                use_container_width=True,
+                width="stretch",
             )
         except Exception:
             st.download_button(
@@ -175,7 +191,7 @@ def _render_toolbar(settings: AppSettings) -> None:
                 data=b"",
                 file_name="verilume-chat.pdf",
                 disabled=True,
-                use_container_width=True,
+                width="stretch",
             )
 
 
@@ -186,7 +202,8 @@ def _render_message(
     source_display: str = "expander",
 ) -> None:
     role = message.get("role", "assistant")
-    with st.chat_message(role):
+    avatar = USER_ICON if role == "user" else ASSISTANT_ICON
+    with st.chat_message(role, avatar=avatar):
         if role == "assistant":
             _render_assistant_meta(message, index)
         response = message.get("response")
@@ -201,12 +218,15 @@ def _render_answer(response: RAGResponse, key_prefix: str) -> None:
     recommendation = _recommendation_for_response(response, key_prefix)
     if recommendation is None:
         _render_answer_origin(response)
+        _render_evidence_badges(response)
         st.markdown(_display_answer(response))
         return
     _render_recommendation(**recommendation)
 
 
-def _render_sources(response: RAGResponse, settings: AppSettings, display: str = "expander") -> None:
+def _render_sources(
+    response: RAGResponse, settings: AppSettings, display: str = "expander"
+) -> None:
     if display == "inline":
         _render_sources_inline(response, settings)
         return
@@ -214,37 +234,145 @@ def _render_sources(response: RAGResponse, settings: AppSettings, display: str =
 
 
 def _render_sources_expanded(response: RAGResponse, settings: AppSettings) -> None:
+    _render_evidence_details(response)
     if settings.show_local_sources and response.local_sources:
-        with st.expander("Local citations", expanded=False):
-            _render_local_sources_table(response)
+        st.markdown(
+            f'<div class="veri-source-section veri-source-section-local">{LOCAL_SOURCES_HEADER}</div>',
+            unsafe_allow_html=True,
+        )
+        _render_local_sources_table(response)
     if response.web_sources:
-        with st.expander("Sources consulted", expanded=True):
+        with st.expander(f"{WEB_SOURCES_HEADER} ({len(response.web_sources)})", expanded=True):
             _render_web_source_groups(response)
 
 
 def _render_sources_inline(response: RAGResponse, settings: AppSettings) -> None:
+    _render_evidence_details_inline(response)
     if settings.show_local_sources and response.local_sources:
         with st.container():
             st.markdown(
-                '<div class="veri-inline-source-heading">Local citations</div>',
+                f'<div class="veri-inline-source-heading veri-inline-source-heading-local">{LOCAL_SOURCES_HEADER}</div>',
                 unsafe_allow_html=True,
             )
             _render_local_sources_table(response)
     if response.web_sources:
         with st.container():
             st.markdown(
-                '<div class="veri-inline-source-heading">Sources consulted</div>',
+                f'<div class="veri-inline-source-heading veri-inline-source-heading-web">{WEB_SOURCES_HEADER}</div>',
                 unsafe_allow_html=True,
             )
             _render_web_source_groups(response)
 
 
+def _render_evidence_badges(response: RAGResponse) -> None:
+    badges = _evidence_badges(response)
+    if not badges:
+        return
+
+    rendered = "".join(f"<span>{escape(label)}</span>" for label in badges)
+    st.markdown(
+        f'<div class="veri-evidence-badges">{rendered}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_evidence_details(response: RAGResponse) -> None:
+    rows = _evidence_detail_rows(response)
+    if not rows:
+        return
+
+    with st.expander(EVIDENCE_HEADER, expanded=False):
+        for label, value in rows:
+            st.markdown(f"**{label}:** {value}")
+
+
+def _render_evidence_details_inline(response: RAGResponse) -> None:
+    rows = _evidence_detail_rows(response)
+    if not rows:
+        return
+
+    summary = " · ".join(f"{label}: {value}" for label, value in rows[:3])
+    st.caption(f"{EVIDENCE_HEADER} — {summary}")
+
+
+def _evidence_badges(response: RAGResponse) -> list[str]:
+    confidence = (response.confidence or "").strip()
+    diagnostics = response.diagnostics or {}
+    badges = [_confidence_badge(confidence)]
+
+    agreement = str(diagnostics.get("source_agreement") or "").strip()
+    if agreement:
+        badges.append(f"Agreement: {agreement.title()}")
+
+    if diagnostics.get("local_is_older_than_web") is True:
+        badges.append("Freshness: newer web evidence")
+    elif diagnostics.get("requires_date_reconciliation") is True:
+        badges.append("Freshness checked")
+
+    winner = str(diagnostics.get("evidence_winner") or "").replace("_", " ").strip()
+    if winner:
+        badges.append(f"Winner: {winner.title()}")
+
+    return [badge for badge in badges if badge]
+
+
+def _confidence_badge(confidence: str) -> str:
+    labels = {
+        "current-information": "Evidence: Current verified",
+        "high": "Evidence: High confidence",
+        "medium": "Evidence: Medium confidence",
+        "low": "Evidence: Low confidence",
+        "local-grounded": "Evidence: Local grounded",
+        "local-web-assisted": "Evidence: Local + web",
+        "web-assisted": "Evidence: Web assisted",
+        "model-only": "Evidence: AI knowledge",
+        "model-selection-warning": "Evidence: Model unavailable",
+        "needs-token": "Evidence: Token needed",
+        "generation-error": "Evidence: Generation error",
+    }
+    return labels.get(confidence, f"Evidence: {confidence.replace('-', ' ').title()}")
+
+
+def _evidence_detail_rows(response: RAGResponse) -> list[tuple[str, str]]:
+    diagnostics = response.diagnostics or {}
+    fields = (
+        ("Evidence note", _friendly_evidence_note(diagnostics.get("evidence_note"))),
+        ("Freshness note", diagnostics.get("freshness_note")),
+        ("Local older than web", diagnostics.get("local_is_older_than_web")),
+        ("Source agreement", diagnostics.get("source_agreement")),
+        ("Evidence winner", diagnostics.get("evidence_winner")),
+        ("Query type", diagnostics.get("query_type")),
+        ("Web note", diagnostics.get("web_note")),
+        ("Web error", diagnostics.get("web_error")),
+        ("Verification", diagnostics.get("answer_verification_status")),
+    )
+
+    rows: list[tuple[str, str]] = []
+    for label, value in fields:
+        formatted = _format_diagnostic_value(value)
+        if formatted:
+            rows.append((label, formatted))
+    return rows
+
+
+def _format_diagnostic_value(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value if item)
+    return str(value)
+
+
 def _render_local_sources_table(response: RAGResponse) -> None:
-    st.dataframe(local_source_rows(response.local_sources), use_container_width=True, hide_index=True)
+    st.dataframe(local_source_rows(response.local_sources), width="stretch", hide_index=True)
 
 
 def _render_web_source_groups(response: RAGResponse) -> None:
-    for group_title, grouped_sources in _group_web_source_rows(web_source_rows(response.web_sources)):
+    for group_title, grouped_sources in _group_web_source_rows(
+        web_source_rows(response.web_sources)
+    ):
         st.markdown(f"**{group_title}**")
         for source in grouped_sources:
             preview = str(source["Preview"] or "").strip()
@@ -263,7 +391,10 @@ def _group_web_source_rows(
     for row in rows:
         source_type = str(row.get("Source type") or "Web")
         grouped.setdefault(source_type, []).append(row)
-    return [(_web_source_group_title(source_type, group), group) for source_type, group in grouped.items()]
+    return [
+        (_web_source_group_title(source_type, group), group)
+        for source_type, group in grouped.items()
+    ]
 
 
 def _web_source_group_title(source_type: str, rows: list[dict[str, str | float | None]]) -> str:
@@ -281,7 +412,10 @@ def _web_source_group_title(source_type: str, rows: list[dict[str, str | float |
 def _render_assistant_meta(message: dict[str, Any], index: int) -> None:
     col_a, col_b = st.columns([7.5, 1.3])
     with col_a:
-        st.markdown('<div class="veri-answer-heading">Answer</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="veri-answer-heading">{ANSWER_HEADER}</div>',
+            unsafe_allow_html=True,
+        )
     with col_b:
         _render_copy_answer_button(str(message.get("content", "")), index)
     timestamp = _format_timestamp(message.get("timestamp"))
@@ -321,17 +455,32 @@ def _render_answer_origin(response: RAGResponse) -> None:
     )
 
 
+def _friendly_evidence_note(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "no evidence available.":
+        return ""
+    return text
+
+
 def _answer_origin(response: RAGResponse) -> tuple[str, str, str]:
     uses_local = _uses_local_retrieval(response)
     uses_web = _uses_web_search(response)
     if uses_local and uses_web:
         return "\U0001f500 Hybrid", _hybrid_confidence(response), _hybrid_source_type(response)
     if uses_local:
-        return "\U0001f4c4 Local Retrieval", local_source_confidence(response.local_sources), "Document"
+        return (
+            "\U0001f4c4 Local Retrieval",
+            local_source_confidence(response.local_sources),
+            "Document",
+        )
     if response.diagnostics.get("local_file_question"):
         return "\U0001f4c4 Local Retrieval", "Low", "Document metadata"
     if response.confidence == "current-information" and response.web_sources:
-        return "\U0001f310 Current Information", source_confidence(response.web_sources[0]), "Recent web evidence"
+        return (
+            "\U0001f310 Current Information",
+            source_confidence(response.web_sources[0]),
+            "Recent web evidence",
+        )
     if uses_web and response.web_sources:
         source_type = web_source_type(response.web_sources[0])
         return "\U0001f310 Web Search", source_confidence(response.web_sources[0]), source_type
@@ -443,8 +592,7 @@ def _is_conversational_response(answer: str) -> bool:
 
 def _render_copy_answer_button(answer: str, index: int) -> None:
     button_id = f"copy-answer-{index}"
-    components.html(
-        f"""
+    html = f"""
 <button id="{button_id}" style="
   background:#1a1f27;
   border:1px solid #2b303a;
@@ -482,15 +630,20 @@ button.addEventListener("click", async () => {{
   }}
 }});
 </script>
-        """,
+        """
+    st.iframe(
+        f"data:text/html;charset=utf-8,{quote(html, safe='')}",
         height=38,
+        width="stretch",
     )
 
 
 def _render_message_history(settings: AppSettings) -> None:
     recent_entries, archived_entries = _partition_message_history(st.session_state.messages)
     if any(archived_entries.values()):
-        st.markdown('<div class="veri-history-label">Previous conversations</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="veri-history-label">Previous conversations</div>', unsafe_allow_html=True
+        )
         for label in HISTORY_BUCKETS:
             entries = archived_entries[label]
             if not entries:

@@ -3,7 +3,17 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from verilume.core.web_search import BraveSearch, DuckDuckGoSearch, TavilySearch, create_web_search
+from verilume.core.schemas import WebSource
+from verilume.core.web_search import (
+    BraveSearch,
+    DuckDuckGoSearch,
+    TavilySearch,
+    WebSearchService,
+    boost_priority_sources,
+    classify_query_domain,
+    create_web_search,
+    normalize_web_url_key,
+)
 from verilume.settings import AppSettings
 
 
@@ -28,6 +38,25 @@ class FakeTavilyClient:
         return {"results": []}
 
 
+class CountingSearch(WebSearchService):
+    provider_name = "Counting Search"
+
+    def __init__(self, cache_ttl_seconds: float = 600.0) -> None:
+        super().__init__(cache_ttl_seconds=cache_ttl_seconds)
+        self.calls = 0
+
+    def search(self, query: str) -> list[WebSource]:
+        self.calls += 1
+        return [
+            WebSource(
+                label="W1",
+                title=f"Result for {query.strip()}",
+                url="https://example.com/result",
+                content="Cached result content.",
+            )
+        ]
+
+
 class WebSearchTests(unittest.TestCase):
     def test_factory_uses_selected_provider(self) -> None:
         settings = AppSettings(web_search_provider="brave", brave_api_key="key")
@@ -36,6 +65,44 @@ class WebSearchTests(unittest.TestCase):
 
         self.assertIsInstance(service, BraveSearch)
         self.assertTrue(service.is_configured)
+        self.assertEqual(service.cache_ttl_seconds, 600.0)
+
+    def test_factory_applies_web_search_cache_ttl(self) -> None:
+        settings = AppSettings(
+            web_search_provider="duckduckgo",
+            web_search_cache_ttl_seconds=123,
+        )
+
+        service = create_web_search(settings)
+
+        self.assertIsInstance(service, DuckDuckGoSearch)
+        self.assertEqual(service.cache_ttl_seconds, 123)
+
+    def test_web_search_cache_reuses_normalized_queries_and_copies_results(self) -> None:
+        service = CountingSearch(cache_ttl_seconds=60)
+
+        first = service.search(" Luxembourg ")
+        first[0].title = "Mutated title"
+        second = service.search("luxembourg")
+
+        self.assertEqual(service.calls, 1)
+        self.assertEqual(second[0].title, "Result for Luxembourg")
+
+    def test_web_search_cache_can_be_disabled(self) -> None:
+        service = CountingSearch(cache_ttl_seconds=0)
+
+        service.search("Luxembourg")
+        service.search("Luxembourg")
+
+        self.assertEqual(service.calls, 2)
+
+    def test_normalize_web_url_key_collapses_tracking_variants(self) -> None:
+        first = normalize_web_url_key(
+            "https://www.example.com/news/index.html?utm_source=x&b=2&a=1#section"
+        )
+        second = normalize_web_url_key("http://example.com/news/?a=1&b=2")
+
+        self.assertEqual(first, second)
 
     def test_brave_results_are_normalized(self) -> None:
         payload = {
@@ -133,3 +200,16 @@ class WebSearchTests(unittest.TestCase):
         self.assertEqual(sources, [])
         self.assertGreaterEqual(len(fake_client.calls), 1)
         self.assertFalse(fake_client.calls[0]["exact_match"])
+
+    def test_priority_source_boosting_is_domain_generic(self) -> None:
+        sources = [
+            WebSource("W1", "Blog", "https://example.com/post", "general", score=0.4),
+            WebSource("W2", "Official", "https://gouvernement.lu/profile", "official", score=0.5),
+        ]
+
+        domain = classify_query_domain("Who is the current grand duke of Luxembourg?")
+        boosted = boost_priority_sources(sources, domain)
+
+        self.assertEqual(domain, "government")
+        self.assertEqual(boosted[0].label, "W2")
+        self.assertTrue(boosted[0].metadata["priority_source"])

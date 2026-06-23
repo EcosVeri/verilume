@@ -93,11 +93,7 @@ def _sources_markdown(response: RAGResponse) -> list[str]:
 
 
 def _escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _message_timestamp(message: dict[str, Any]) -> str:

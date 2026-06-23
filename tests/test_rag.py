@@ -1058,6 +1058,87 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("not externally verified", result.answer)
         self.assertEqual(result.web_sources, [])
 
+    def test_model_knowledge_answers_stable_geography_when_web_is_disabled(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Russia is the largest country in Europe by land area.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("The largest country in Europe")
+
+        self.assertEqual(result.confidence, "model-only")
+        self.assertFalse(result.used_web)
+        self.assertIn("Russia", result.answer)
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertEqual(result.diagnostics["evidence_winner"], "model_knowledge")
+        self.assertIn("model_knowledge", result.diagnostics["evidence_streams"])
+        self.assertFalse(result.diagnostics["web_enabled"])
+
+    def test_model_knowledge_answers_definitions_when_web_is_disabled(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer=(
+                "Bayesian inference updates prior beliefs with observed evidence "
+                "to produce a posterior distribution."
+            ),
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("What is Bayesian inference?")
+
+        self.assertEqual(result.confidence, "model-only")
+        self.assertIn("posterior", result.answer.lower())
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertEqual(result.diagnostics["evidence_winner"], "model_knowledge")
+
+    def test_current_fact_without_web_does_not_fake_model_verification(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Sam Altman is the current CEO of OpenAI.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("Who is the current CEO of OpenAI?")
+
+        self.assertEqual(result.confidence, "low")
+        self.assertFalse(result.used_web)
+        self.assertTrue(result.diagnostics["model_knowledge_available"])
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertNotIn("Sam Altman", result.answer)
+        self.assertIn("AI knowledge is not reliable enough for current facts", result.answer)
+
+    def test_all_available_evidence_streams_are_reported_when_web_is_enabled(self) -> None:
+        rag = self._make_rag(
+            local_answer="Local econometrics note [S1].",
+            model_answer="Model econometrics background.",
+            web_answer="Web econometrics source [W1].",
+            local_sources=[LOCAL_SOURCE],
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="Econometrics overview",
+                    url="https://example.edu/econometrics",
+                    content="Econometrics uses statistics to study economic data.",
+                )
+            ],
+        )
+
+        result = rag.ask("Search the web about econometrics")
+
+        self.assertTrue(result.used_web)
+        self.assertTrue(result.diagnostics["used_local"])
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertTrue(result.diagnostics["used_web"])
+        self.assertEqual(
+            result.diagnostics["evidence_streams"],
+            ["local", "model_knowledge", "web"],
+        )
+        self.assertEqual(result.diagnostics["evidence_winner"], "hybrid")
+
     def test_web_fallback_filters_to_used_web_citations(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
@@ -1180,6 +1261,55 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("30.37 million", result.answer)
         self.assertIn("[W1]", result.answer)
         self.assertTrue(any("area africa" in query.lower() for query in rag.web_search.queries))
+
+    def test_smallest_country_in_europe_skips_irrelevant_local_files(self) -> None:
+        rag = self._make_rag(
+            local_answer="Bayesian local paper should not be used [S1].",
+            model_answer=MODEL_UNKNOWN,
+            web_answer="Vatican City is the smallest country in Europe [W1].",
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="Vatican City smallest country",
+                    url="https://example.com/vatican",
+                    content="Vatican City is the smallest country in Europe by area.",
+                )
+            ],
+        )
+
+        result = rag.ask("The smallest country in Europe")
+
+        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertEqual(result.diagnostics["search_plan_intent"], "public_knowledge")
+        self.assertIn("Vatican City", result.answer)
+        self.assertNotIn("Bayesian", result.answer)
+
+    def test_president_of_smallest_country_uses_head_of_state_search(self) -> None:
+        rag = self._make_rag(
+            local_answer="Irrelevant local answer [S1].",
+            model_answer=MODEL_UNKNOWN,
+            web_answer=(
+                "Vatican City does not have a president; its head of state is the Pope [W1]."
+            ),
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="Vatican City head of state",
+                    url="https://example.com/vatican-head",
+                    content=(
+                        "Vatican City does not have a president. "
+                        "The Pope is head of state of Vatican City."
+                    ),
+                )
+            ],
+        )
+
+        result = rag.ask("The president of the smallest country in Europe")
+
+        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertEqual(result.diagnostics["search_plan_intent"], "public_knowledge")
+        self.assertIn("does not have a president", result.answer)
+        self.assertTrue(any("head of state" in query for query in result.diagnostics["web_queries"]))
 
     def test_answer_verification_reports_source_support(self) -> None:
         source = WebSource(

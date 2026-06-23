@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from verilume.core.agents import (
     ConversationContextAgent,
     ConversationResolution,
-    ConversationState,
     ExtractedEntities,
     IntentRoute,
     IntentRouterAgent,
@@ -17,6 +16,7 @@ from verilume.core.agents import (
     register_conversation_role,
     update_state_from_answer,
 )
+from verilume.core.conversation_state import ConversationState
 from verilume.core.evidence import classify_question
 from verilume.core.schemas import ChatMessage
 

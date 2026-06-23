@@ -16,11 +16,10 @@ from urllib.parse import urlparse
 from verilume.core.agents import (
     DEFAULT_NEWS_OUTLETS,
     ConversationContextAgent,
-    ConversationState,
+    ConversationResolution,
     IntentRouterAgent,
     QueryUnderstandingAgent,
     SearchPlan,
-    SearchPlanningAgent,
     _country_from_text,
     _country_phrase,
     _government_role_from_text,
@@ -30,6 +29,8 @@ from verilume.core.agents import (
     requested_news_sources,
     update_state_from_answer,
 )
+from verilume.core.citation_verifier import CitationVerificationAgent
+from verilume.core.conversation_state import ConversationState
 from verilume.core.embeddings import EmbeddingService
 from verilume.core.evidence import (
     build_final_answer_payload,
@@ -47,9 +48,14 @@ from verilume.core.generation import (
     is_model_selection_warning,
 )
 from verilume.core.query_preprocessing import normalize_query, query_variants
+from verilume.core.query_interpreter import (
+    QueryInterpretationAgent,
+    apply_interpretation_to_state,
+)
 from verilume.core.reranking import query_terms, rerank_local_sources, rerank_web_sources
 from verilume.core.retrieval import ChromaRetriever
 from verilume.core.schemas import ChatMessage, LocalSource, RAGResponse, WebSource
+from verilume.core.search_planner import SearchPlanner
 from verilume.core.web_search import (
     DuckDuckGoSearch,
     boost_priority_sources,
@@ -447,8 +453,10 @@ class VerilumeRAG:
         self.web_search = create_web_search(settings)
         self.conversation_context_agent = ConversationContextAgent()
         self.intent_router = IntentRouterAgent()
+        self.query_interpretation_agent = QueryInterpretationAgent(self.generator)
         self.query_understanding_agent = QueryUnderstandingAgent()
-        self.search_planning_agent = SearchPlanningAgent()
+        self.search_planner = SearchPlanner()
+        self.citation_verifier = CitationVerificationAgent()
         self._response_cache: dict[tuple, tuple[float, RAGResponse]] = {}
 
     def ask(
@@ -482,16 +490,21 @@ class VerilumeRAG:
     ) -> RAGResponse:
         _check_generation_stop(should_stop)
 
-        conversation = self.conversation_context_agent.resolve(question, list(history), conversation_state)
         original_question = question
-        question = conversation.resolved_question
+        base_state = _merged_conversation_state_for_interpretation(
+            self.conversation_context_agent.state_from_history(list(history)),
+            conversation_state,
+        )
 
-        route = self.intent_router.route(question)
+        route = self.intent_router.route(original_question)
         if not route.uses_rag:
             diagnostics = (
                 DiagnosticsBuilder()
-                .add_query_info(original=original_question, resolved=question, query=question)
-                .add_conversation(conversation)
+                .add_query_info(
+                    original=original_question,
+                    resolved=original_question,
+                    query=original_question,
+                )
                 .update(
                     query_type=route.route,
                     query_types=[route.route],
@@ -508,20 +521,79 @@ class VerilumeRAG:
                 confidence=route.route,
                 diagnostics=diagnostics,
             )
-            return _attach_conversation_state(response, conversation.state, original_question, question)
+            return _attach_conversation_state(response, base_state, original_question, original_question)
+
+        self.query_interpretation_agent.generator = self.generator
+        _emit_stage(on_stage, "Interpreting question...")
+        interpretation = self.query_interpretation_agent.interpret(
+            original_question,
+            list(history),
+            base_state,
+        )
+        interpreted_state = apply_interpretation_to_state(base_state, interpretation)
+        if interpretation.needs_clarification:
+            diagnostics = (
+                DiagnosticsBuilder()
+                .add_query_info(
+                    original=original_question,
+                    resolved=interpretation.resolved_question,
+                    query=interpretation.resolved_question,
+                )
+                .update(
+                    query_type="clarification",
+                    query_types=["clarification"],
+                    pipeline="query_interpreter",
+                    query_interpretation=interpretation.diagnostics,
+                    interpretation_intent=interpretation.intent,
+                    needs_clarification=True,
+                    clarification_question=interpretation.clarification_question,
+                )
+                .build()
+            )
+            response = RAGResponse(
+                interpretation.clarification_question or "Can you clarify what you mean?",
+                [],
+                [],
+                False,
+                "clarification",
+                diagnostics,
+            )
+            return _attach_conversation_state(
+                response,
+                interpreted_state,
+                original_question,
+                interpretation.resolved_question,
+            )
+
+        question = interpretation.resolved_question or original_question
+        semantic_plan = self.search_planner.plan(interpretation)
+        search_plan = semantic_plan.to_legacy_plan()
+        search_plan.country = interpreted_state.active_country
+        search_plan.role = interpreted_state.active_role or _government_role_from_text(
+            normalize_intent_text(question)
+        )
+        search_plan.entity = interpreted_state.active_person
+        search_plan.topic = (
+            interpreted_state.active_topic
+            or interpreted_state.active_research_topic
+            or (interpreted_state.active_topics[0] if interpreted_state.active_topics else "")
+        )
+        conversation = ConversationResolution(
+            original_question=original_question,
+            resolved_question=question,
+            state=interpreted_state,
+            is_followup=interpretation.is_follow_up,
+            news_intent=interpretation.intent == "news",
+            requested_sources=interpretation.preferred_sources,
+        )
 
         query_understanding = self.query_understanding_agent.understand(question)
-        local_file_question = self._is_local_file_question(question)
+        local_file_question = (
+            self._is_local_file_question(question)
+            or interpretation.intent == "local_document"
+        )
         query_understanding.local_file_question = local_file_question
         identity_tokens = _identity_tokens(question)
-        search_plan = self.search_planning_agent.plan(
-            question,
-            conversation.state,
-            query_understanding,
-            local_file_question=local_file_question,
-            news_intent=conversation.news_intent,
-            requested_sources=conversation.requested_sources,
-        )
 
         query = question
         if (
@@ -537,21 +609,33 @@ class VerilumeRAG:
             _emit_stage(on_stage, "Rewriting query...")
             query = self.generator.rewrite_query(question, list(history))
 
+        time_sensitive = (
+            query_understanding.requires_date_reconciliation
+            or semantic_plan.freshness_required
+        )
         diagnostics = (
             DiagnosticsBuilder()
             .add_query_info(original=original_question, resolved=question, query=query)
             .add_conversation(conversation)
             .add_search_plan(search_plan)
             .update(
+                query_interpretation=interpretation.diagnostics,
+                interpretation_intent=interpretation.intent,
+                interpretation_entities=interpretation.entities,
+                interpretation_search_queries=interpretation.search_queries,
+                interpretation_use_local=interpretation.use_local,
+                interpretation_use_web=interpretation.use_web,
+                interpretation_use_model=interpretation.use_model_knowledge,
+                semantic_search_plan=semantic_plan.diagnostics(),
                 normalized_query=normalize_query(query).canonical,
                 normalized_key_terms=list(normalize_query(query).key_terms),
                 normalized_entities=list(normalize_query(query).entities),
                 query_type=query_understanding.primary_type.value,
                 query_types=[item.value for item in query_understanding.types],
                 local_file_question=query_understanding.local_file_question,
-                time_sensitive=query_understanding.requires_date_reconciliation,
+                time_sensitive=time_sensitive,
                 requires_web_validation=query_understanding.requires_web_validation,
-                requires_date_reconciliation=query_understanding.requires_date_reconciliation,
+                requires_date_reconciliation=time_sensitive,
                 generation_backend=self.settings.generation_backend,
                 generation_model=self.settings.active_generation_model(),
                 pipeline="local_first_parallel_fallback_evidence",
@@ -562,9 +646,12 @@ class VerilumeRAG:
         force_web = self._is_web_requested(question)
         planned_web = search_plan.need_web
         web_ready = bool(self.settings.enable_web_search and getattr(self.web_search, "is_configured", True))
-        time_sensitive = query_understanding.requires_date_reconciliation
         current_or_web = bool(force_web or time_sensitive or (planned_web and not search_plan.need_local))
-        web_queries = _web_queries(question, query, search_plan)
+        expanded_web_queries = _web_queries(question, query, search_plan)
+        if search_plan.intent == "government":
+            web_queries = _dedupe_web_queries([*expanded_web_queries, *semantic_plan.search_queries])
+        else:
+            web_queries = _dedupe_web_queries([*semantic_plan.search_queries, *expanded_web_queries])
         diagnostics["web_queries"] = web_queries
         skip_local_retrieval = (not search_plan.need_local) or _should_skip_local_retrieval(
             question,
@@ -588,7 +675,9 @@ class VerilumeRAG:
         diagnostics["local_evidence_strong"] = strong_local
         _emit_stage(on_stage, f"✓ Local retrieval ({len(local_sources)} matches)")
 
-        if local_file_question:
+        if local_file_question and (
+            not local_sources or _should_answer_local_file_question_directly(query)
+        ):
             response = self._answer_local_file_question(query, local_sources, diagnostics, on_stage)
             return _attach_conversation_state(response, conversation.state, original_question, question)
 
@@ -667,14 +756,12 @@ class VerilumeRAG:
             )
             skip_model_for_current_role = bool(_current_public_role_context(question))
             skip_model_for_public_office = _is_public_office_query(question, query_understanding)
-            skip_model_for_public_knowledge = _looks_like_public_knowledge_query(question)
             skip_model_for_age_at_office = _looks_like_age_at_office_query(question)
             skip_model_for_plan = not search_plan.need_model
             skip_model = (
                 skip_model_for_entity
                 or skip_model_for_current_role
                 or skip_model_for_public_office
-                or skip_model_for_public_knowledge
                 or skip_model_for_age_at_office
                 or skip_model_for_plan
             )
@@ -687,7 +774,7 @@ class VerilumeRAG:
                         skip_model_for_entity
                         or skip_model_for_current_role
                         or skip_model_for_public_office
-                        or skip_model_for_public_knowledge
+                        or _looks_like_public_knowledge_query(question)
                         or skip_model_for_age_at_office
                         or skip_model_for_plan
                     ),
@@ -699,14 +786,12 @@ class VerilumeRAG:
                     diagnostics["model_skipped"] = "age-at-office query uses web evidence first"
                 elif skip_model_for_entity:
                     diagnostics["model_skipped"] = "entity lookup uses web evidence first"
-                elif skip_model_for_current_role and "current" in question.lower():
+                elif skip_model_for_current_role and "current" in original_question.lower():
                     diagnostics["model_skipped"] = "current public role uses web evidence first"
                 elif skip_model_for_public_office:
                     diagnostics["model_skipped"] = "current public office query uses web evidence first"
                 elif skip_model_for_current_role:
                     diagnostics["model_skipped"] = "current public role uses web evidence first"
-                elif skip_model_for_public_knowledge:
-                    diagnostics["model_skipped"] = "public knowledge query uses web evidence first"
                 elif skip_model_for_plan:
                     diagnostics["model_skipped"] = f"{search_plan.intent} plan uses source evidence first"
 
@@ -782,14 +867,28 @@ class VerilumeRAG:
         current_override = _current_public_fact_answer(question, web_sources)
         if (
             current_override
-            and query_understanding.requires_date_reconciliation
+            and time_sensitive
             and not _looks_like_office_start_query(question)
+            and not _looks_like_age_at_office_query(question)
         ):
             answer, evidence_conflict = current_override
             diagnostics["current_role_override"] = True
             diagnostics["evidence_conflict"] = evidence_conflict
 
         answer = _verify_citations(answer, local_sources, web_sources)
+        citation_verification = self.citation_verifier.verify(
+            answer,
+            question=question,
+            local_sources=local_sources,
+            web_sources=web_sources,
+        )
+        answer = citation_verification.answer
+        diagnostics["citation_verification_supported"] = citation_verification.supported
+        diagnostics["citation_verification_labels"] = citation_verification.cited_labels
+        if citation_verification.missing_labels:
+            diagnostics["citation_verification_missing_labels"] = citation_verification.missing_labels
+        if citation_verification.notes:
+            diagnostics["citation_verification_notes"] = citation_verification.notes
         verification = _verify_answer_against_evidence(
             answer,
             local_sources,
@@ -801,6 +900,29 @@ class VerilumeRAG:
         diagnostics["answer_verification_score"] = verification["score"]
         if verification.get("note"):
             diagnostics["answer_verification_note"] = verification["note"]
+        if verification["status"] == "unsupported" and web_sources and (current_or_web or time_sensitive):
+            retry_override = _current_public_fact_answer(question, web_sources)
+            if retry_override:
+                answer, evidence_conflict = retry_override
+                diagnostics["current_role_override"] = True
+                diagnostics["evidence_conflict"] = evidence_conflict
+            else:
+                answer = _fallback_answer_from_web_results(
+                    web_sources=web_sources,
+                    previous_answer=answer,
+                )
+                diagnostics["unsupported_answer_rebuilt_from_web"] = True
+            verification = _verify_answer_against_evidence(
+                answer,
+                local_sources,
+                web_sources,
+                question,
+                self.settings,
+            )
+            diagnostics["answer_verification_status"] = verification["status"]
+            diagnostics["answer_verification_score"] = verification["score"]
+            if verification.get("note"):
+                diagnostics["answer_verification_note"] = verification["note"]
         used_local_sources = _local_sources_used_in_answer(local_sources, answer)
         used_web_sources = _web_sources_used_in_answer(web_sources, answer)
         if web_sources and not used_web_sources and (current_or_web or not used_local_sources):
@@ -955,7 +1077,8 @@ class VerilumeRAG:
                 provider_label,
                 "search could not complete, so no web sources were added.",
             )
-        if query_understanding.requires_date_reconciliation and not web_sources and not (local_answer and self._is_sufficient(local_answer)):
+        needs_current_verification = _requires_current_source_verification(question, query_understanding)
+        if needs_current_verification and not web_sources and not (local_answer and self._is_sufficient(local_answer)):
             if web_error:
                 return _helpful_failure_answer(
                     question,
@@ -968,7 +1091,7 @@ class VerilumeRAG:
                 reason="current_no_sources",
                 provider_label=provider_label,
             )
-        if query_understanding.requires_date_reconciliation and web_sources and all(
+        if needs_current_verification and web_sources and all(
             _is_unreliable_current_source(source) for source in web_sources
         ):
             return _unverified_current_web_answer(web_sources)
@@ -1440,6 +1563,7 @@ def _attach_conversation_state(
     original_question: str,
     resolved_question: str,
 ) -> RAGResponse:
+    state.last_resolved_question = resolved_question or state.last_resolved_question
     response.conversation_state = state
     response.original_query = original_question
     response.resolved_query = resolved_question
@@ -1448,6 +1572,41 @@ def _attach_conversation_state(
     response.diagnostics.setdefault("conversation_roles", state.roles)
     response.diagnostics.setdefault("roles", state.roles)
     return response
+
+
+def _merged_conversation_state_for_interpretation(
+    inferred: ConversationState,
+    provided: ConversationState | None,
+) -> ConversationState:
+    if provided is None:
+        return inferred
+    merged = ConversationState(
+        active_topic=provided.active_topic or inferred.active_topic,
+        active_country=provided.active_country or inferred.active_country,
+        active_person=provided.active_person or inferred.active_person,
+        active_document=provided.active_document or inferred.active_document,
+        active_news_story=provided.active_news_story or inferred.active_news_story,
+        entities=[*provided.entities, *inferred.entities],
+        roles={**inferred.roles, **provided.roles},
+        preferred_sources=_unique_nonempty([*provided.preferred_sources, *inferred.preferred_sources]),
+        last_answer_summary=provided.last_answer_summary or inferred.last_answer_summary,
+        last_resolved_question=provided.last_resolved_question or inferred.last_resolved_question,
+        active_entities=_unique_nonempty([*provided.active_entities, *inferred.active_entities]),
+        active_topics=_unique_nonempty([*provided.active_topics, *inferred.active_topics]),
+        active_documents=_unique_nonempty([*provided.active_documents, *inferred.active_documents]),
+        active_web_sources=_unique_nonempty([*provided.active_web_sources, *inferred.active_web_sources]),
+        active_dates=_unique_nonempty([*provided.active_dates, *inferred.active_dates]),
+        active_role=provided.active_role or inferred.active_role,
+        active_company=provided.active_company or inferred.active_company,
+        active_organization=provided.active_organization or inferred.active_organization,
+        active_law=provided.active_law or inferred.active_law,
+        active_research_topic=provided.active_research_topic or inferred.active_research_topic,
+        active_dataset=provided.active_dataset or inferred.active_dataset,
+        intent=provided.intent or inferred.intent,
+        expires_after=provided.expires_after or inferred.expires_after,
+        active_event=provided.active_event or inferred.active_event,
+    )
+    return merged
 
 
 def _response_cache_key(
@@ -1479,6 +1638,14 @@ def _query_needs_context_cache_key(question: str) -> bool:
         return True
     role = _government_role_from_text(normalized)
     return bool(role and not _country_from_text(question))
+
+
+def _should_answer_local_file_question_directly(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    return bool(
+        normalized.startswith(("which document", "which file", "what document", "what file"))
+        or re.search(r"\b(?:contains?|mentions?|where)\b", normalized)
+    )
 
 
 def _response_cache_ttl(response: RAGResponse) -> float:
@@ -1598,6 +1765,81 @@ def _looks_like_news_query(question: str) -> bool:
     if any(marker in lower for marker in ("news", "reuters", "ap news", "bbc", "sky news", "financial times", "guardian")):
         return True
     return any(marker in lower for marker in ("resign", "resigned", "resignation", "breaking"))
+
+
+def _requires_current_source_verification(question: str, query_understanding=None) -> bool:
+    """Return True only for facts that may be stale without source evidence."""
+
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    if _is_stable_model_knowledge_question(question):
+        return False
+    if _looks_like_office_start_query(question) or _looks_like_age_at_office_query(question):
+        return False
+    if _looks_like_news_query(question):
+        return True
+    if any(
+        marker in normalized
+        for marker in (
+            "current",
+            "latest",
+            "most recent",
+            "newest",
+            "recent",
+            "today",
+            "now",
+            "this year",
+            "2026",
+            "2025",
+            "weather",
+            "price",
+            "prices",
+            "stock",
+            "schedule",
+            "deadline",
+            "law",
+            "regulation",
+            "directive",
+            "ceo",
+        )
+    ):
+        return True
+    if _is_public_office_query(question, query_understanding or classify_question(question)):
+        return True
+    return bool(getattr(query_understanding, "requires_date_reconciliation", False))
+
+
+def _is_stable_model_knowledge_question(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    if _looks_like_news_query(question):
+        return False
+    if re.search(r"\b(?:latest|current|recent|today|now|this year|breaking|resigned?|resignation)\b", normalized):
+        return False
+    if _looks_like_scientific_local_query(question) or _looks_like_public_knowledge_query(question):
+        return True
+    if normalized.startswith(
+        (
+            "define ",
+            "explain ",
+            "what is ",
+            "what are ",
+            "how does ",
+            "how do ",
+            "why does ",
+            "why do ",
+            "how to ",
+        )
+    ):
+        return not any(marker in normalized for marker in PUBLIC_OFFICE_MARKERS)
+    return bool(
+        re.search(
+            r"\b(?:smallest|largest|biggest|capital|area|population|continent|ocean|mountain|river|country in europe)\b",
+            normalized,
+        )
+    )
 
 
 def _looks_like_age_at_office_query(question: str) -> bool:
@@ -1783,12 +2025,50 @@ def _add_evidence_diagnostics(
     ranked_evidence = rank_evidence(evidence_items, query_understanding, settings=settings)
     reconciliation = reconcile_dates(ranked_evidence, query_understanding)
     resolution = resolve_evidence_conflicts(question, ranked_evidence, local_answer=local_answer if local_sufficient else None, ai_knowledge_answer=model_answer if model_sufficient else None, web_answer=None, query=query_understanding, reconciliation=reconciliation)
-    diagnostics["evidence_winner"] = resolution.winner.value if resolution.winner else None
+    used_local = bool(local_sources and local_sufficient)
+    used_model = bool(model_sufficient and _model_answer_available(model_answer))
+    used_web = bool(web_sources)
+    diagnostics["used_local"] = used_local
+    diagnostics["used_model_knowledge"] = used_model
+    diagnostics["used_web"] = used_web
+    diagnostics["model_knowledge_available"] = _model_answer_available(model_answer)
+    diagnostics["web_enabled"] = bool(getattr(settings, "enable_web_search", False)) if settings is not None else False
+    diagnostics["evidence_streams"] = [
+        stream
+        for stream, enabled in (
+            ("local", used_local),
+            ("model_knowledge", used_model),
+            ("web", used_web),
+        )
+        if enabled
+    ]
+    diagnostics["evidence_winner"] = _diagnostic_evidence_winner(
+        resolution.winner,
+        used_local=used_local,
+        used_model=used_model,
+        used_web=used_web,
+    )
     diagnostics["evidence_note"] = resolution.evidence_note
     diagnostics["source_agreement"] = resolution.source_agreement
     diagnostics["freshness_note"] = reconciliation.freshness_note
     diagnostics["local_is_older_than_web"] = reconciliation.local_is_older_than_web
     return ranked_evidence, resolution
+
+
+def _model_answer_available(model_answer: str | None) -> bool:
+    text = (model_answer or "").strip()
+    return bool(text and not any(marker in text.lower() for marker in INSUFFICIENT_MARKERS))
+
+
+def _diagnostic_evidence_winner(winner, *, used_local: bool, used_model: bool, used_web: bool) -> str | None:
+    if used_local and used_model and used_web:
+        return "hybrid"
+    if winner is None:
+        return None
+    value = getattr(winner, "value", str(winner))
+    if value == "ai_knowledge":
+        return "model_knowledge"
+    return value
 
 
 def _local_sources_used_in_answer(local_sources: Sequence[LocalSource], answer: str) -> list[LocalSource]:
@@ -2004,6 +2284,8 @@ def _identity_tokens(question):
         any(term in {"area", "population", "capital"} for term in normalized.key_terms)
         and not lower.startswith(("who ", "who is", "who's"))
     ):
+        return []
+    if _government_role_from_text(normalize_intent_text(question)) or _current_public_role_context(question):
         return []
     if _looks_like_scientific_local_query(question) and lower.startswith(
         ("what is", "what are", "explain", "define", "how does", "how do")

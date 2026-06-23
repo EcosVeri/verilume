@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from verilume.core.conversation_state import ConversationState
 from verilume.core.evidence import QueryUnderstanding, classify_question
 from verilume.core.schemas import ChatMessage
 
@@ -288,56 +289,6 @@ class IntentRoute:
     answer: str = ""
     uses_rag: bool = True
     diagnostics: dict[str, str | bool] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class ConversationState:
-    """Compact working memory inferred from recent messages."""
-
-    active_entities: list[str] = field(default_factory=list)
-    active_topics: list[str] = field(default_factory=list)
-    active_documents: list[str] = field(default_factory=list)
-    active_web_sources: list[str] = field(default_factory=list)
-    active_dates: list[str] = field(default_factory=list)
-    active_country: str = ""
-    active_person: str = ""
-    active_role: str = ""
-    active_company: str = ""
-    active_organization: str = ""
-    active_law: str = ""
-    active_document: str = ""
-    active_research_topic: str = ""
-    active_dataset: str = ""
-    active_news_story: str = ""
-    intent: str = ""
-    preferred_sources: list[str] = field(default_factory=list)
-    roles: dict[str, str] = field(default_factory=dict)
-    expires_after: int = 10
-    active_event: str = ""
-    last_answer_summary: str = ""
-
-    def get_person_by_role(self, role: str) -> str:
-        return self.roles.get(_role_key(role), "")
-
-    def remember_role(self, role: str, person: str) -> None:
-        role_key = _role_key(role)
-        cleaned_person = _clean_name(person)
-        if role_key and cleaned_person:
-            self.roles[role_key] = cleaned_person
-
-    def resolve_role_reference(self, query: str) -> str:
-        resolved = query or ""
-        for role, person in sorted(self.roles.items(), key=lambda item: len(item[0]), reverse=True):
-            if not person:
-                continue
-            role_pattern = re.escape(role).replace(r"\ ", r"\s+")
-            resolved = re.sub(
-                rf"\b(?:the\s+)?{role_pattern}\b",
-                person,
-                resolved,
-                flags=re.IGNORECASE,
-            )
-        return re.sub(r"\s+", " ", resolved).strip()
 
 
 @dataclass(slots=True)
@@ -1629,6 +1580,7 @@ def _merge_conversation_states(base: ConversationState, override: ConversationSt
     if override is None:
         return base
     merged = ConversationState(
+        active_topic=override.active_topic or base.active_topic,
         active_entities=_unique_nonempty([*override.active_entities, *base.active_entities]),
         active_topics=_unique_nonempty([*override.active_topics, *base.active_topics]),
         active_documents=_unique_nonempty([*override.active_documents, *base.active_documents]),
@@ -1644,12 +1596,14 @@ def _merge_conversation_states(base: ConversationState, override: ConversationSt
         active_research_topic=override.active_research_topic or base.active_research_topic,
         active_dataset=override.active_dataset or base.active_dataset,
         active_news_story=override.active_news_story or base.active_news_story,
+        entities=[*override.entities, *base.entities],
         intent=override.intent or base.intent,
         preferred_sources=_unique_nonempty([*override.preferred_sources, *base.preferred_sources]),
         roles={**base.roles, **override.roles},
         expires_after=override.expires_after or base.expires_after,
         active_event=override.active_event or base.active_event,
         last_answer_summary=override.last_answer_summary or base.last_answer_summary,
+        last_resolved_question=override.last_resolved_question or base.last_resolved_question,
     )
     if merged.active_role and not merged.active_person:
         merged.active_person = merged.roles.get(_role_key(merged.active_role), "")
@@ -1673,7 +1627,9 @@ def update_state_from_answer(
         country = extracted.countries[0]
     if country:
         updated.active_country = country
+        updated.active_topic = updated.active_topic or _country_topic(country)
         updated.active_topics = _unique_nonempty([_country_topic(country), *updated.active_topics])
+        updated.remember_entity(country, "country")
     for role_key, holder in extracted.roles.items():
         updated.remember_role(role_key, holder)
     if role:
@@ -1683,8 +1639,10 @@ def update_state_from_answer(
             updated.remember_role(role, holder)
             updated.active_person = holder
             updated.active_entities = _unique_nonempty([holder, *updated.active_entities])
+            updated.remember_entity(holder, "person", role)
     if not updated.active_person and extracted.persons:
         updated.active_person = extracted.persons[0]
+        updated.remember_entity(updated.active_person, "person")
     updated.active_entities = _unique_nonempty(
         [updated.active_person, *extracted.persons, *updated.active_entities]
     )
@@ -1692,12 +1650,15 @@ def update_state_from_answer(
         updated.active_organization = updated.active_organization or extracted.organizations[0]
         updated.active_company = updated.active_company or extracted.organizations[0]
     if public_topic:
+        updated.active_topic = public_topic
         updated.active_research_topic = public_topic
         updated.active_topics = _unique_nonempty([public_topic, *updated.active_topics])
         updated.active_entities = _unique_nonempty([public_topic, *updated.active_entities])
+        updated.remember_entity(public_topic, "topic")
     if extracted.topics:
         updated.active_topics = _unique_nonempty([*extracted.topics, *updated.active_topics])
     updated.last_answer_summary = _last_assistant_summary([ChatMessage(role="assistant", content=answer)])
+    updated.last_resolved_question = resolved_query or updated.last_resolved_question
     updated.preferred_sources = _unique_nonempty([*requested_news_sources(text), *updated.preferred_sources])
     updated.intent = _conversation_intent(text, updated) or updated.intent
     updated.active_news_story = _news_story_from_state(updated) or updated.active_news_story

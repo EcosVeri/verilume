@@ -487,7 +487,9 @@ def rank_evidence(
                 if age_days <= freshness_decay_days:
                     score += freshness_boost * 0.5
         elif _is_ai_source(item):
-            score += 0.05
+            score += 0.35
+            if query.primary_type in {QueryType.GENERAL, QueryType.RESEARCH}:
+                score += 0.1
             if not query.ai_knowledge_allowed_as_final:
                 score -= 0.5
         item.metadata = dict(item.metadata or {})
@@ -578,8 +580,8 @@ def resolve_evidence_conflicts(
         confidence = "medium"
     else:
         winner = EvidenceSourceType.AI_KNOWLEDGE
-        note = "Only AI knowledge was available; it is not externally verified."
-        confidence = "low"
+        note = "AI knowledge is the strongest available evidence; it is not externally verified."
+        confidence = "medium" if query.ai_knowledge_allowed_as_final else "low"
     labels = {item.label for item in ranked_evidence[:4] if item.label and item.label != "AI"}
     agreement = "multiple sources" if len(labels) > 1 else "single source"
     if reconciliation.local_is_older_than_web:

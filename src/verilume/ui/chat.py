@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import streamlit as st
 
-from verilume.core.conversation_context import ConversationState
+from verilume.core.conversation_state import ConversationState
 from verilume.core.schemas import ChatMessage, RAGResponse
 from verilume.rag import GenerationStopped, get_rag_service
 from verilume.settings import AppSettings
@@ -341,6 +341,10 @@ def _evidence_detail_rows(response: RAGResponse) -> list[tuple[str, str]]:
         ("Local older than web", diagnostics.get("local_is_older_than_web")),
         ("Source agreement", diagnostics.get("source_agreement")),
         ("Evidence winner", diagnostics.get("evidence_winner")),
+        ("Evidence streams", diagnostics.get("evidence_streams")),
+        ("Used model knowledge", diagnostics.get("used_model_knowledge")),
+        ("Model knowledge available", diagnostics.get("model_knowledge_available")),
+        ("Web enabled", diagnostics.get("web_enabled")),
         ("Query type", diagnostics.get("query_type")),
         ("Web note", diagnostics.get("web_note")),
         ("Web error", diagnostics.get("web_error")),
@@ -361,8 +365,15 @@ def _format_diagnostic_value(value: Any) -> str:
     if isinstance(value, bool):
         return "Yes" if value else "No"
     if isinstance(value, (list, tuple)):
-        return ", ".join(str(item) for item in value if item)
-    return str(value)
+        return ", ".join(_friendly_token(str(item)) for item in value if item)
+    return _friendly_token(str(value))
+
+
+def _friendly_token(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    return text.replace("_", " ").title() if re.fullmatch(r"[a-z_]+", text) else text
 
 
 def _render_local_sources_table(response: RAGResponse) -> None:

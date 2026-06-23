@@ -154,6 +154,7 @@ WEB_REQUEST_MARKERS = (
     "financial times", "guardian",
 )
 LOCAL_FILE_MARKERS = (
+    "in the file", "in the document", "in my file", "in my document",
     "in the local file", "in the local files", "indexed local file", "indexed local files",
     "indexed local documents", "in the database", "local database", "knowledge base",
     "uploaded file", "uploaded files", "uploaded document", "uploaded documents", "in my files",
@@ -661,6 +662,7 @@ class VerilumeRAG:
         local_queries = _local_search_queries(query, identity_tokens, local_file_question)
         diagnostics["local_queries"] = local_queries
         diagnostics["local_retrieval_skipped"] = skip_local_retrieval
+        diagnostics["local_retrieval_attempted"] = not skip_local_retrieval
 
         if skip_local_retrieval:
             _emit_stage(on_stage, "Skipping local retrieval for public web/model evidence...")
@@ -683,16 +685,24 @@ class VerilumeRAG:
 
         local_answer = LOCAL_UNKNOWN
         local_sufficient = False
+        local_answer_relevant = False
         generation_error = ""
         if local_sources:
             _emit_stage(on_stage, "Checking local evidence...")
             try:
                 local_answer = self.generator.answer_local(query, list(history), local_sources)
-                local_sufficient = self._is_sufficient(local_answer)
+                local_answer_relevant = _local_answer_supports_question(
+                    query,
+                    local_answer,
+                    local_sources,
+                    local_file_question=local_file_question,
+                )
+                local_sufficient = self._is_sufficient(local_answer) and local_answer_relevant
             except GenerationError as exc:
                 generation_error = str(exc)
                 diagnostics["generation_error"] = _clean_error_message(exc)
                 diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
+        diagnostics["local_answer_relevant"] = local_answer_relevant
         diagnostics["local_sufficient"] = local_sufficient
 
         if local_sufficient and not current_or_web:
@@ -720,8 +730,8 @@ class VerilumeRAG:
             return _attach_conversation_state(response, conversation.state, original_question, question)
 
         should_use_web = _should_use_web(
+            question=question,
             force_web=force_web or planned_web,
-            local_sufficient=local_sufficient,
             web_enabled=self.settings.enable_web_search,
             query_understanding=query_understanding,
         ) or bool(generation_error and web_ready)
@@ -732,6 +742,7 @@ class VerilumeRAG:
         web_error = ""
         model_answer = MODEL_UNKNOWN
         model_sufficient = False
+        model_answer_relevant = False
 
         if generation_error and not should_use_web:
             response = RAGResponse(
@@ -813,7 +824,8 @@ class VerilumeRAG:
                 if model_future is not None:
                     try:
                         model_answer = model_future.result()
-                        model_sufficient = self._is_sufficient(model_answer)
+                        model_answer_relevant = _model_answer_supports_question(query, model_answer)
+                        model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
                     except GenerationError as exc:
                         generation_error = str(exc)
                         diagnostics["model_error"] = _clean_error_message(exc)
@@ -824,13 +836,47 @@ class VerilumeRAG:
             _emit_stage(on_stage, "Checking AI knowledge...")
             try:
                 model_answer = self.generator.answer_model_knowledge(query, list(history))
-                model_sufficient = self._is_sufficient(model_answer)
+                model_answer_relevant = _model_answer_supports_question(query, model_answer)
+                model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
             except GenerationError as exc:
                 generation_error = str(exc)
                 diagnostics["model_error"] = _clean_error_message(exc)
                 diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
             except Exception as exc:
                 diagnostics["model_error"] = _clean_error_message(exc)
+        if (
+            not should_use_web
+            and not local_sufficient
+            and self.settings.enable_web_search
+            and (generation_error or not model_sufficient)
+        ):
+            should_use_web = True
+            diagnostics["web_requested"] = True
+            diagnostics["web_reason"] = "fallback_after_model"
+            if not web_ready:
+                diagnostics["web_count"] = 0
+                diagnostics["web_note"] = "Web search fallback is enabled, but the selected provider is not configured."
+            else:
+                _emit_stage(on_stage, "Checking web evidence...")
+                try:
+                    web_sources = self._search_web_sources(
+                        web_queries,
+                        question=question,
+                        prefer_fast_public_search=_looks_like_public_knowledge_query(question),
+                    )
+                    if identity_tokens:
+                        web_sources = _filter_web_sources_for_identity(web_sources, identity_tokens)
+                    web_sources = self._rerank_web(_web_rerank_query(query, web_queries), web_sources)
+                    diagnostics["web_count"] = len(web_sources)
+                    _emit_stage(on_stage, f"✓ Web evidence ({len(web_sources)} sources)")
+                except Exception as exc:
+                    web_error = _clean_error_message(exc)
+                    diagnostics["web_error"] = web_error
+                    diagnostics["web_count"] = 0
+                    diagnostics["web_note"] = (
+                        f"{self.settings.web_search_provider_label()} search could not complete."
+                    )
+        diagnostics["model_answer_relevant"] = model_answer_relevant
         diagnostics["model_sufficient"] = model_sufficient
 
         _check_generation_stop(should_stop)
@@ -1519,6 +1565,7 @@ class VerilumeRAG:
         intent_patterns = (
             r"\b(?:do|does|did|is|are|any)\b.+\b(?:my|uploaded|indexed|local)\s+(?:file|files|document|documents)\b",
             r"\b(?:which|what)\s+(?:file|files|document|documents)\b",
+            r"\bin\s+(?:my\s+|the\s+)?(?:uploaded\s+|indexed\s+|local\s+)?(?:file|document)\b",
             r"\bin\s+(?:my|the\s+uploaded|uploaded|the\s+indexed|indexed|local)\s+(?:file|files|document|documents)\b",
             r"\b(?:do\s+my|does\s+my|do\s+the\s+uploaded|is\s+there).+\b(?:document|file|upload|index|local)\b",
         )
@@ -1713,35 +1760,22 @@ def _lightweight_chat_answer(question: str) -> str:
 
 def _should_use_web(
     *,
+    question: str,
     force_web: bool,
-    local_sufficient: bool,
     web_enabled: bool,
     query_understanding,
 ) -> bool:
-    if force_web or query_understanding.requires_date_reconciliation:
+    if not web_enabled:
+        return False
+    if force_web:
         return True
-    if query_understanding.requires_web_validation and not local_sufficient:
+    if any(marker in question.lower() for marker in WEB_REQUEST_MARKERS):
         return True
-    return web_enabled and not local_sufficient
+    return _requires_current_source_verification(question, query_understanding)
 
 
 def _should_skip_local_retrieval(question: str, query_understanding, local_file_question: bool) -> bool:
-    if local_file_question:
-        return False
-    if _looks_like_office_start_query(question):
-        return True
-    if _looks_like_age_at_office_query(question):
-        return True
-    if _looks_like_news_query(question):
-        return True
-    if _looks_like_public_knowledge_query(question):
-        return True
-    lower = (question or "").lower()
-    if query_understanding.requires_date_reconciliation and any(
-        marker in lower for marker in PUBLIC_OFFICE_MARKERS
-    ):
-        return True
-    return bool(_current_public_role_context(question))
+    return False
 
 
 def _looks_like_public_knowledge_query(question: str) -> bool:
@@ -2069,6 +2103,68 @@ def _diagnostic_evidence_winner(winner, *, used_local: bool, used_model: bool, u
     if value == "ai_knowledge":
         return "model_knowledge"
     return value
+
+
+def _local_answer_supports_question(
+    question: str,
+    answer: str,
+    local_sources: Sequence[LocalSource],
+    *,
+    local_file_question: bool,
+) -> bool:
+    if local_file_question:
+        return True
+    text = (answer or "").strip()
+    if not text:
+        return False
+    normalized = normalize_query(question)
+    query_terms = {term.lower() for term in normalized.key_terms if len(term) > 2}
+    entity_terms = {
+        term.lower()
+        for entity in normalized.entities
+        for term in re.findall(r"[a-z0-9][a-z0-9'-]*", entity.lower())
+        if len(term) > 2
+    }
+    cited_sources = _local_sources_used_in_answer(local_sources, answer) or list(local_sources[:3])
+    haystacks = [text.lower(), *[(source.text or "").lower() for source in cited_sources]]
+    combined = " ".join(haystacks)
+    if cited_sources and any(marker in question.lower() for marker in WEB_REQUEST_MARKERS):
+        return True
+    if entity_terms and not any(term in combined for term in entity_terms):
+        return False
+    if not query_terms:
+        return True
+    if len(query_terms) <= 1 and cited_sources:
+        return True
+    overlap = {term for term in query_terms if term in combined}
+    minimum_overlap = 1 if len(query_terms) <= 3 else 2
+    return len(overlap) >= minimum_overlap
+
+
+def _model_answer_supports_question(question: str, answer: str) -> bool:
+    text = (answer or "").strip().lower()
+    if not text:
+        return False
+    normalized = normalize_query(question)
+    query_terms = [
+        term.lower()
+        for term in normalized.key_terms
+        if len(term) > 2 and term.lower() not in {"web", "search", "online", "internet"}
+    ]
+    entity_terms = [
+        term.lower()
+        for entity in normalized.entities
+        for term in re.findall(r"[a-z0-9][a-z0-9'-]*", entity.lower())
+        if len(term) > 2
+    ]
+    if entity_terms and not any(term in text for term in entity_terms):
+        return False
+    if not query_terms:
+        return True
+    overlap = sum(1 for term in query_terms if term in text)
+    if len(query_terms) <= 2:
+        return overlap >= 1
+    return overlap >= min(2, len(query_terms))
 
 
 def _local_sources_used_in_answer(local_sources: Sequence[LocalSource], answer: str) -> list[LocalSource]:

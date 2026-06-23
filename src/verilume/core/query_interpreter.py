@@ -41,7 +41,9 @@ Rules:
 - If the question is ambiguous and cannot be resolved, set needs_clarification=true.
 - Do not invent facts.
 - Do not answer the question.
-- For current facts, prefer web search.
+- Keep local search enabled for most answerable questions so local evidence is checked first.
+- Use model knowledge for stable general knowledge when local files do not answer.
+- Use web search for current or changing facts, news, or when the user explicitly asks to search the web.
 - For uploaded/local document questions, prefer local search.
 - For news requests, prefer news sources.
 - For scientific explanations, use local files, model knowledge, and scientific web sources.
@@ -83,8 +85,8 @@ class QueryInterpretationAgent:
     ) -> InterpretedQuery:
         llm_result = self._interpret_with_llm(question, history, state)
         if llm_result is not None:
-            return llm_result
-        return _fallback_interpretation(question, history, state)
+            return _enforce_source_policy(llm_result)
+        return _enforce_source_policy(_fallback_interpretation(question, history, state))
 
     def _interpret_with_llm(
         self,
@@ -790,6 +792,48 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _enforce_source_policy(result: InterpretedQuery) -> InterpretedQuery:
+    question = result.resolved_question or result.original_question
+    normalized = normalize_intent_text(question)
+    explicit_web_request = _web_requested(normalized)
+    current_web_required = _requires_current_web_sources(question, result.intent)
+
+    if result.needs_clarification or result.intent == "clarification":
+        result.use_local = False
+        result.use_web = False
+        result.use_model_knowledge = False
+    elif result.intent == "local_document":
+        result.use_local = True
+        result.use_web = explicit_web_request
+        result.use_model_knowledge = False
+    else:
+        result.use_local = True
+        result.use_web = explicit_web_request or current_web_required
+        result.use_model_knowledge = True
+
+    result.diagnostics = {
+        **dict(result.diagnostics or {}),
+        "source_policy": "local_first_model_then_web",
+        "source_policy_explicit_web": explicit_web_request,
+        "source_policy_current_web": current_web_required,
+    }
+    return result
+
+
+def _requires_current_web_sources(question: str, intent: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if intent in {"news", "government", "current_or_public_fact"}:
+        return True
+    if not normalized:
+        return False
+    if re.search(r"\b(?:current|latest|recent|today|now|breaking|updated|newest|most recent)\b", normalized):
+        return True
+    role = _government_role_from_text(normalized)
+    if role and not _has_office_start_language(normalized):
+        return True
+    return False
 
 
 def _unique_nonempty(items: list[str]) -> list[str]:

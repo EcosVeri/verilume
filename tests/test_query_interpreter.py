@@ -28,10 +28,11 @@ def test_unspecified_country_president_uses_active_country() -> None:
         "Who is the President of the Democratic Republic of the Congo?"
     )
     assert result.use_web
-    assert not result.use_local
+    assert result.use_local
+    assert result.use_model_knowledge
 
 
-def test_smallest_country_query_prefers_public_web_plan() -> None:
+def test_smallest_country_query_uses_local_and_model_before_web() -> None:
     result = QueryInterpretationAgent().interpret(
         "The smallest country in Europe",
         [],
@@ -39,8 +40,9 @@ def test_smallest_country_query_prefers_public_web_plan() -> None:
     )
 
     assert result.intent == "public_knowledge"
-    assert result.use_web
-    assert not result.use_local
+    assert not result.use_web
+    assert result.use_local
+    assert result.use_model_knowledge
     assert any("smallest country in Europe" in query for query in result.search_queries)
 
 
@@ -53,5 +55,6 @@ def test_president_of_smallest_country_uses_head_of_state_queries() -> None:
 
     assert result.intent == "public_knowledge"
     assert result.use_web
-    assert not result.use_local
+    assert result.use_local
+    assert result.use_model_knowledge
     assert any("head of state" in query for query in result.search_queries)

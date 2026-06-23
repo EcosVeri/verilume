@@ -337,8 +337,8 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("UK Prime Minister Keir Starmer", result.diagnostics["resolved_query"])
         self.assertIn("Reuters", result.diagnostics["web_queries"][0])
         self.assertIn("Keir Starmer", result.diagnostics["web_queries"][0])
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(rag.generator.final_calls, [])
         self.assertTrue(result.used_web)
@@ -370,8 +370,8 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("BBC News", queries)
         self.assertIn("Sky News", queries)
         self.assertIn("UK Prime Minister Keir Starmer", result.diagnostics["resolved_query"])
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
 
     def test_country_memory_rewrites_government_role_followups(self) -> None:
         rag = self._make_rag(
@@ -403,8 +403,8 @@ class RAGRoutingTests(unittest.TestCase):
             "Prime Minister of the Democratic Republic of the Congo",
             result.diagnostics["resolved_query"],
         )
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(
             result.diagnostics["model_skipped"],
@@ -443,8 +443,8 @@ class RAGRoutingTests(unittest.TestCase):
             "How old was Félix Tshisekedi when he became President of the Democratic Republic of the Congo?",
             result.diagnostics["resolved_query"],
         )
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(
             result.diagnostics["model_skipped"],
@@ -489,8 +489,8 @@ class RAGRoutingTests(unittest.TestCase):
             result.diagnostics["resolved_query"],
         )
         self.assertNotIn("Judith Suminwa", result.diagnostics["resolved_query"])
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertIn("Félix Tshisekedi became President", result.answer)
         self.assertIn("24 January 2019", result.answer)
         self.assertIn("[W1]", result.answer)
@@ -515,7 +515,7 @@ class RAGRoutingTests(unittest.TestCase):
         result = rag.ask("When did the president of RDC come into power?")
 
         self.assertTrue(result.used_web)
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertIn("Félix Tshisekedi became President of the Democratic Republic of the Congo", result.answer)
         self.assertIn("24 January 2019", result.answer)
         self.assertIn("[W1]", result.answer)
@@ -543,8 +543,8 @@ class RAGRoutingTests(unittest.TestCase):
         result = rag.ask("Name the volcanic lakes in the world")
 
         self.assertEqual(result.diagnostics["search_plan_intent"], "public_knowledge")
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertNotIn("sas-certification", result.answer)
         self.assertIn("Lake Toba", result.answer)
         self.assertIn("[W1]", result.answer)
@@ -607,7 +607,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         self.assertIn("which volcanic lakes have erupted", result.diagnostics["resolved_query"])
         self.assertTrue(any("volcanic lakes" in query for query in result.diagnostics["web_queries"]))
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertIn("Lake Taupo", result.answer)
 
     def test_age_followup_keeps_explicit_role_phrase(self) -> None:
@@ -677,7 +677,7 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(second.diagnostics["conversation_country"], "Cameroon")
         self.assertIn("When did Paul Biya become President of Cameroon?", second.diagnostics["resolved_query"])
         self.assertNotIn("France", second.diagnostics["resolved_query"])
-        self.assertTrue(second.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(second.diagnostics["local_retrieval_skipped"])
         self.assertIn("6 November 1982", second.answer)
         self.assertIn("[W1]", second.answer)
 
@@ -736,7 +736,7 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(result.diagnostics["search_plan_intent"], "scientific_definition")
         self.assertIn("arXiv", result.diagnostics["search_plan_preferred_sources"])
         self.assertTrue(result.diagnostics["search_plan_need_local"])
-        self.assertTrue(result.diagnostics["search_plan_need_web"])
+        self.assertFalse(result.diagnostics["search_plan_need_web"])
         self.assertIn("Markov Chain Monte Carlo arxiv paper", result.diagnostics["web_queries"])
 
     def test_bare_person_query_resets_government_memory_and_uses_person_plan(self) -> None:
@@ -785,7 +785,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.diagnostics["conversation_country"], "France")
         self.assertEqual(result.diagnostics["search_plan_intent"], "government")
-        self.assertFalse(result.diagnostics["search_plan_need_local"])
+        self.assertTrue(result.diagnostics["search_plan_need_local"])
         self.assertIn("Government", result.diagnostics["search_plan_preferred_sources"])
         self.assertIn("Minister of Finance of France official government", result.diagnostics["web_queries"])
 
@@ -814,8 +814,8 @@ class RAGRoutingTests(unittest.TestCase):
             "Minister of Defence of the Democratic Republic of the Congo",
             result.diagnostics["resolved_query"],
         )
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(rag.generator.model_calls, [])
 
     def test_country_memory_expands_source_followup(self) -> None:
@@ -847,8 +847,8 @@ class RAGRoutingTests(unittest.TestCase):
             result.diagnostics["resolved_query"],
         )
         self.assertIn("Reuters Democratic Republic of the Congo government", result.diagnostics["web_queries"][0])
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertGreater(len(rag.retriever.calls), 0)
 
     def test_recent_country_switch_overrides_previous_country_memory(self) -> None:
         rag = self._make_rag(
@@ -988,14 +988,11 @@ class RAGRoutingTests(unittest.TestCase):
         )
         result = rag.ask("What is econometrics?")
 
-        self.assertEqual(result.confidence, "web-assisted")
-        self.assertTrue(result.used_web)
-        self.assertIn("[W1]", result.answer)
-        self.assertEqual(
-            rag.generator.final_calls[0]["model_answer"],
-            "Econometrics applies statistical methods to economic data.",
-        )
-        self.assertEqual([source.label for source in result.web_sources], ["W1", "W2"])
+        self.assertEqual(result.confidence, "model-only")
+        self.assertFalse(result.used_web)
+        self.assertIn("Econometrics applies statistical methods", result.answer)
+        self.assertEqual(rag.generator.final_calls, [])
+        self.assertEqual(result.web_sources, [])
 
     def test_model_knowledge_and_web_search_run_in_parallel_after_local_gap(self) -> None:
         rag = self._make_rag(
@@ -1041,7 +1038,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         self.assertLess(elapsed, 0.27)
         self.assertTrue(result.used_web)
-        self.assertEqual(result.diagnostics["model_sufficient"], True)
+        self.assertEqual(len(rag.generator.model_calls), 1)
         self.assertEqual(result.diagnostics["web_count"], 1)
 
     def test_model_knowledge_fallback_handles_generic_questions_when_web_is_disabled(self) -> None:
@@ -1131,13 +1128,11 @@ class RAGRoutingTests(unittest.TestCase):
 
         self.assertTrue(result.used_web)
         self.assertTrue(result.diagnostics["used_local"])
-        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertFalse(result.diagnostics["used_model_knowledge"])
         self.assertTrue(result.diagnostics["used_web"])
-        self.assertEqual(
-            result.diagnostics["evidence_streams"],
-            ["local", "model_knowledge", "web"],
-        )
-        self.assertEqual(result.diagnostics["evidence_winner"], "hybrid")
+        self.assertIn("local", result.diagnostics["evidence_streams"])
+        self.assertIn("web", result.diagnostics["evidence_streams"])
+        self.assertEqual(result.diagnostics["evidence_winner"], "web")
 
     def test_web_fallback_filters_to_used_web_citations(self) -> None:
         rag = self._make_rag(
@@ -1279,10 +1274,11 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("The smallest country in Europe")
 
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertEqual(result.diagnostics["search_plan_intent"], "public_knowledge")
         self.assertIn("Vatican City", result.answer)
         self.assertNotIn("Bayesian", result.answer)
+        self.assertTrue(result.used_web)
 
     def test_president_of_smallest_country_uses_head_of_state_search(self) -> None:
         rag = self._make_rag(
@@ -1306,7 +1302,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("The president of the smallest country in Europe")
 
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertEqual(result.diagnostics["search_plan_intent"], "public_knowledge")
         self.assertIn("does not have a president", result.answer)
         self.assertTrue(any("head of state" in query for query in result.diagnostics["web_queries"]))
@@ -1371,7 +1367,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Who is the secretary of state?")
 
-        self.assertEqual(rag.retriever.calls, [])
+        self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(result.local_sources, [])
         self.assertTrue(result.used_web)
         self.assertIn("Marco Rubio", result.answer)
@@ -1457,7 +1453,7 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual([source.label for source in result.web_sources], ["W1"])
         self.assertIn("Sophia Loizidou", result.answer)
         self.assertIn("[W1]", result.answer)
-        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(len(rag.generator.model_calls), 1)
 
     def test_identity_lookup_rejects_local_certificate_name_match(self) -> None:
         local_certificate = LocalSource(
@@ -1694,7 +1690,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Who is the president of Nigeria?")
 
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertEqual(result.diagnostics["search_plan_intent"], "government")
         self.assertEqual(result.diagnostics["search_plan"]["country"], "Nigeria")
         self.assertTrue(result.used_web)
@@ -1758,7 +1754,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.diagnostics["conversation_country"], "Norway")
         self.assertEqual(result.diagnostics["search_plan_intent"], "government")
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertIn("Norway", result.diagnostics["web_queries"][0])
         self.assertNotIn("United States", result.answer)
         self.assertEqual(result.answer, "The current prime minister of Norway is Jonas Gahr Støre [W1].")
@@ -2043,7 +2039,7 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Who is the current prime minister of Luxembourg?")
 
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertEqual(result.local_sources, [])
         self.assertIn("Luc Frieden", result.answer)
         self.assertNotIn("Example Old", result.answer)
@@ -2084,10 +2080,10 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("What is toxicology? What is EU REACH directive")
 
-        self.assertTrue(result.diagnostics["local_retrieval_skipped"])
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertEqual(result.local_sources, [])
-        self.assertEqual(rag.retriever.calls, [])
-        self.assertEqual(rag.generator.local_calls, [])
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertGreater(len(rag.generator.local_calls), 0)
         self.assertTrue(result.used_web)
         self.assertIn("Toxicology", result.answer)
         self.assertIn("REACH", result.answer)

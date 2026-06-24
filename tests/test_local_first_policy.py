@@ -173,8 +173,9 @@ class LocalFirstWorkflowTests(unittest.TestCase):
         result = rag.ask("Who is the current prime minister of Luxembourg?")
 
         self.assertGreater(len(rag.retriever.calls), 0)
-        self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.diagnostics["parallel_model_with_web"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["parallel_model_with_web"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
         self.assertTrue(result.used_web)
         self.assertIn("Luc Frieden", result.answer)
 

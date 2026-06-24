@@ -332,6 +332,13 @@ IDENTITY_LOCAL_NEGATIVE_MARKERS = (
     "ticket",
     "visa",
 )
+PRIVATE_IDENTITY_DOCUMENT_MARKERS = (
+    "passport",
+    "identity card",
+    "id card",
+    "residence permit",
+    "visa",
+)
 IDENTITY_WEB_CLUSTER_MARKERS = (
     "about",
     "author",
@@ -871,6 +878,11 @@ class VerilumeRAG:
         model_answer = MODEL_UNKNOWN
         model_sufficient = False
         model_answer_relevant = False
+        current_web_validation = _requires_current_source_verification(
+            question,
+            query_understanding,
+        )
+        diagnostics["current_web_validation"] = current_web_validation
 
         if generation_error and not should_use_web:
             response = RAGResponse(
@@ -888,12 +900,15 @@ class VerilumeRAG:
             diagnostics["web_note"] = "Web search was requested, but the selected provider is not configured."
 
         if should_use_web and web_ready:
-            _emit_stage(on_stage, "Checking AI knowledge and web evidence...")
-            current_web_validation = _requires_current_source_verification(
-                question,
-                query_understanding,
+            if current_web_validation:
+                _emit_stage(on_stage, "Checking current web evidence...")
+            else:
+                _emit_stage(on_stage, "Checking AI knowledge and web evidence...")
+            use_model_with_web = bool(not generation_error and not current_web_validation)
+            diagnostics["parallel_model_with_web"] = use_model_with_web
+            diagnostics["model_skipped_for_current_web"] = bool(
+                current_web_validation and not generation_error
             )
-            diagnostics["parallel_model_with_web"] = not generation_error
             with ThreadPoolExecutor(max_workers=2) as executor:
                 web_future = executor.submit(
                     self._search_web_sources,
@@ -906,7 +921,7 @@ class VerilumeRAG:
                     ),
                 )
                 model_future: Future | None = None
-                if not generation_error:
+                if use_model_with_web:
                     model_future = executor.submit(self.generator.answer_model_knowledge, query, list(history))
 
                 try:
@@ -936,17 +951,21 @@ class VerilumeRAG:
                     except Exception as exc:
                         diagnostics["model_error"] = _clean_error_message(exc)
         elif not generation_error:
-            _emit_stage(on_stage, "Checking AI knowledge...")
-            try:
-                model_answer = self.generator.answer_model_knowledge(query, list(history))
-                model_answer_relevant = _model_answer_supports_question(query, model_answer)
-                model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
-            except GenerationError as exc:
-                generation_error = str(exc)
-                diagnostics["model_error"] = _clean_error_message(exc)
-                diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
-            except Exception as exc:
-                diagnostics["model_error"] = _clean_error_message(exc)
+            if current_web_validation:
+                diagnostics["model_skipped_for_current_web"] = True
+                diagnostics["parallel_model_with_web"] = False
+            else:
+                _emit_stage(on_stage, "Checking AI knowledge...")
+                try:
+                    model_answer = self.generator.answer_model_knowledge(query, list(history))
+                    model_answer_relevant = _model_answer_supports_question(query, model_answer)
+                    model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
+                except GenerationError as exc:
+                    generation_error = str(exc)
+                    diagnostics["model_error"] = _clean_error_message(exc)
+                    diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
+                except Exception as exc:
+                    diagnostics["model_error"] = _clean_error_message(exc)
         if (
             not should_use_web
             and not local_sufficient
@@ -2559,6 +2578,30 @@ def _looks_like_public_knowledge_query(question: str) -> bool:
     return any(part.startswith(PUBLIC_DEFINITION_PREFIXES) for part in parts)
 
 
+def _looks_like_generic_knowledge_question(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in LOCAL_FILE_MARKERS):
+        return False
+    if _looks_like_public_knowledge_query(question) or _looks_like_scientific_local_query(question):
+        return True
+    return normalized.startswith(
+        (
+            "define ",
+            "describe ",
+            "explain ",
+            "how do ",
+            "how does ",
+            "what are ",
+            "what does ",
+            "what is ",
+            "why do ",
+            "why does ",
+        )
+    )
+
+
 def _looks_like_news_query(question: str) -> bool:
     lower = (question or "").lower()
     if any(marker in lower for marker in ("news", "reuters", "ap news", "bbc", "sky news", "financial times", "guardian")):
@@ -3002,8 +3045,8 @@ def _finalize_evidence_diagnostics(
 
 
 def _model_answer_aligns_with_answer(model_answer: str | None, answer: str | None) -> bool:
-    model_terms = set(query_terms(model_answer or ""))
-    answer_terms = set(query_terms(_remove_citation_text(_strip_model_knowledge_footer(answer or ""))))
+    model_terms = set(query_terms(_normalize_common_spelling(model_answer or "")))
+    answer_terms = set(query_terms(_normalize_common_spelling(_remove_citation_text(_strip_model_knowledge_footer(answer or "")))))
     if not model_terms or not answer_terms:
         return False
     overlap = len(model_terms & answer_terms) / max(1, min(len(model_terms), len(answer_terms)))
@@ -3023,41 +3066,52 @@ def _local_answer_supports_question(
     if not text:
         return False
     normalized = normalize_query(question)
-    query_terms = {term.lower() for term in normalized.key_terms if len(term) > 2}
+    query_terms = {
+        _normalize_common_spelling(term.lower())
+        for term in normalized.key_terms
+        if len(term) > 2
+    }
     entity_terms = {
-        term.lower()
+        _normalize_common_spelling(term.lower())
         for entity in normalized.entities
         for term in re.findall(r"[a-z0-9][a-z0-9'-]*", entity.lower())
         if len(term) > 2
     }
     cited_sources = _local_sources_used_in_answer(local_sources, answer) or list(local_sources[:3])
-    haystacks = [text.lower(), *[(source.text or "").lower() for source in cited_sources]]
+    haystacks = [
+        text.lower(),
+        *[
+            f"{getattr(source, 'document', '')} {getattr(source, 'text', '')}".lower()
+            for source in cited_sources
+        ],
+    ]
     combined = " ".join(haystacks)
+    combined = _normalize_common_spelling(combined)
     if cited_sources and any(marker in question.lower() for marker in WEB_REQUEST_MARKERS):
         return True
     if entity_terms and not any(term in combined for term in entity_terms):
         return False
     if not query_terms:
         return True
-    if len(query_terms) <= 1 and cited_sources:
-        return True
     overlap = {term for term in query_terms if term in combined}
+    if len(query_terms) <= 1:
+        return bool(overlap)
     minimum_overlap = 1 if len(query_terms) <= 3 else 2
     return len(overlap) >= minimum_overlap
 
 
 def _model_answer_supports_question(question: str, answer: str) -> bool:
-    text = (answer or "").strip().lower()
+    text = _normalize_common_spelling((answer or "").strip().lower())
     if not text:
         return False
     normalized = normalize_query(question)
     query_terms = [
-        term.lower()
+        _normalize_common_spelling(term.lower())
         for term in normalized.key_terms
         if len(term) > 2 and term.lower() not in {"web", "search", "online", "internet"}
     ]
     entity_terms = [
-        term.lower()
+        _normalize_common_spelling(term.lower())
         for entity in normalized.entities
         for term in re.findall(r"[a-z0-9][a-z0-9'-]*", entity.lower())
         if len(term) > 2
@@ -3070,6 +3124,28 @@ def _model_answer_supports_question(question: str, answer: str) -> bool:
     if len(query_terms) <= 2:
         return overlap >= 1
     return overlap >= min(2, len(query_terms))
+
+
+def _normalize_common_spelling(text: str) -> str:
+    value = text or ""
+    replacements = {
+        "optimisation": "optimization",
+        "optimise": "optimize",
+        "optimised": "optimized",
+        "optimising": "optimizing",
+        "organisation": "organization",
+        "organise": "organize",
+        "organised": "organized",
+        "organising": "organizing",
+        "behaviour": "behavior",
+        "colour": "color",
+        "analyse": "analyze",
+        "analysed": "analyzed",
+        "analysing": "analyzing",
+    }
+    for source, target in replacements.items():
+        value = re.sub(rf"\b{re.escape(source)}\b", target, value)
+    return value
 
 
 def _local_sources_used_in_answer(local_sources: Sequence[LocalSource], answer: str) -> list[LocalSource]:
@@ -3405,6 +3481,13 @@ def _filter_relevant_local_sources(
         semantic_score = float(source.score or 0.0)
         explicit_file_match = _source_matches_explicit_local_file_name(source, explicit_file_names)
 
+        if (
+            not local_file_question
+            and not identity_tokens
+            and _looks_like_generic_knowledge_question(query)
+            and _is_private_identity_document_source(source)
+        ):
+            continue
         if identity_tokens and not _source_matches_identity(
             f"{source.document} {source.text}",
             identity_tokens,
@@ -3464,6 +3547,35 @@ def _normalized_source_text(source):
         r"[^a-z0-9]+",
         " ",
         f"{getattr(source, 'document', '')} {getattr(source, 'title', '')} {getattr(source, 'text', '')} {getattr(source, 'content', '')}".lower(),
+    )
+
+
+def _is_private_identity_document_source(source: LocalSource) -> bool:
+    context = _normalize_ocr_location_context(
+        " ".join(
+            _unique_nonempty(
+                [
+                    getattr(source, "document", ""),
+                    getattr(source, "title", ""),
+                    getattr(source, "text", ""),
+                    str(getattr(source, "metadata", {}) or {}),
+                ]
+            )
+        )
+    )
+    if not any(marker in context for marker in PRIVATE_IDENTITY_DOCUMENT_MARKERS):
+        return False
+    return _local_source_supports_identity_fact(source) or any(
+        marker in context
+        for marker in (
+            "date of issue",
+            "date of expiry",
+            "expiration",
+            "expiry",
+            "document number",
+            "passport number",
+            "nationality",
+        )
     )
 
 

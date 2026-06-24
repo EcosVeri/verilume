@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from verilume.app import ACTIVE_SETTINGS_KEY, _clear_rag_cache_if_settings_changed
+from verilume.app import (
+    ACTIVE_SETTINGS_KEY,
+    _clear_rag_cache_if_settings_changed,
+    _release_rag_retriever,
+)
 from verilume.settings import AppSettings
 
 
@@ -13,6 +17,19 @@ class FakeCachedService:
 
     def cache_clear(self) -> None:
         self.clear_calls += 1
+
+
+class FakeRetriever:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class FakeRAGService:
+    def __init__(self) -> None:
+        self.retriever = FakeRetriever()
 
 
 class AppCacheTests(unittest.TestCase):
@@ -33,6 +50,15 @@ class AppCacheTests(unittest.TestCase):
 
         self.assertEqual(cached_service.clear_calls, 2)
         self.assertEqual(session_state[ACTIVE_SETTINGS_KEY], changed_settings)
+
+    def test_release_rag_retriever_closes_cached_retriever(self) -> None:
+        service = FakeRAGService()
+        settings = AppSettings()
+
+        with patch("verilume.app.get_rag_service", return_value=service):
+            _release_rag_retriever(settings)
+
+        self.assertEqual(service.retriever.close_calls, 1)
 
 
 if __name__ == "__main__":

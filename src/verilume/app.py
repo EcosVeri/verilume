@@ -67,6 +67,8 @@ def _handle_ingestion(sidebar: SidebarState) -> None:
     for uploaded_file in sidebar.uploaded_files:
         save_uploaded_file(uploaded_file.name, uploaded_file.getvalue(), settings.docs_dir)
 
+    _release_rag_retriever(settings)
+
     progress = st.progress(0)
     caption = st.empty()
 
@@ -90,17 +92,25 @@ def _handle_ingestion(sidebar: SidebarState) -> None:
             get_rag_service.cache_clear()
             _collect_document_stats_cached.clear()
             status.update(label="Knowledge base ready", state="complete")
-        except Exception:
+        except Exception as exc:
             LOGGER.exception("Knowledge base build failed.")
-            st.error(
-                "The knowledge base build failed. Please check the terminal logs and try again."
-            )
+            get_rag_service.cache_clear()
+            _collect_document_stats_cached.clear()
+            detail = str(exc).strip()
+            if detail:
+                st.error(f"The knowledge base build failed. {detail}")
+            else:
+                st.error(
+                    "The knowledge base build failed. Please check the terminal logs and try again."
+                )
             status.update(label="Knowledge base build failed", state="error")
 
 
 def _handle_document_removal(sidebar: SidebarState) -> None:
     if not sidebar.remove_clicked or not sidebar.remove_documents:
         return
+
+    _release_rag_retriever(sidebar.settings)
 
     with st.status("Removing selected documents", expanded=True) as status:
         try:
@@ -112,9 +122,17 @@ def _handle_document_removal(sidebar: SidebarState) -> None:
             else:
                 st.warning("No selected documents could be removed.")
             status.update(label="Document removal complete", state="complete")
-        except Exception:
+        except Exception as exc:
             LOGGER.exception("Document removal failed.")
-            st.error("Removing selected documents failed. Please check the terminal logs and try again.")
+            get_rag_service.cache_clear()
+            _collect_document_stats_cached.clear()
+            detail = str(exc).strip()
+            if detail:
+                st.error(f"Removing selected documents failed. {detail}")
+            else:
+                st.error(
+                    "Removing selected documents failed. Please check the terminal logs and try again."
+                )
             status.update(label="Document removal failed", state="error")
 
 
@@ -125,6 +143,21 @@ def _clear_rag_cache_if_settings_changed(settings: AppSettings) -> None:
 
     get_rag_service.cache_clear()
     st.session_state[ACTIVE_SETTINGS_KEY] = settings
+
+
+def _release_rag_retriever(settings: AppSettings) -> None:
+    try:
+        service = get_rag_service(settings)
+    except Exception:
+        return
+
+    retriever = getattr(service, "retriever", None)
+    close = getattr(retriever, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            LOGGER.debug("Failed to close cached retriever before local store mutation.", exc_info=True)
 
 
 @st.cache_data(ttl=60)

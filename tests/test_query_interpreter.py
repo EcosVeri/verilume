@@ -62,7 +62,7 @@ def test_president_of_smallest_country_uses_head_of_state_queries() -> None:
 
 def test_general_people_question_stays_local_first_by_default() -> None:
     result = QueryInterpretationAgent().interpret(
-        "Where is Damian from",
+        "Where is Alex from",
         [],
         ConversationState(),
     )

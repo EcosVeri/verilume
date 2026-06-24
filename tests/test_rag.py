@@ -759,8 +759,153 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(result.diagnostics["search_plan_intent"], "scientific_definition")
         self.assertIn("arXiv", result.diagnostics["search_plan_preferred_sources"])
         self.assertTrue(result.diagnostics["search_plan_need_local"])
-        self.assertTrue(result.diagnostics["search_plan_need_web"])
+        self.assertFalse(result.diagnostics["search_plan_need_web"])
         self.assertIn("Markov Chain Monte Carlo arxiv paper", result.diagnostics["web_queries"])
+
+    def test_named_passport_issue_question_answers_from_local_document_evidence(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-issue",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX EXAMPLE "
+                "Date de d6livrance/ Date of lssue 3t.03.2022 "
+                "Date d'expiration / Date 0f explry 3r.03.2027 "
+                "Place of issue EXAMPLETOWN"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("When was Alex Example issued a passport")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("31.03.2022", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_passport_expiry_followup_answers_from_local_document_evidence(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-expiry",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX EXAMPLE "
+                "Date de d6livrance/ Date of lssue 3t.03.2022 "
+                "Date d'expiration / Date 0f explry 3r.03.2027 "
+                "Place of issue EXAMPLETOWN"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        history = [
+            ChatMessage(role="user", content="Is his passport in the local files?"),
+            ChatMessage(
+                role="assistant",
+                content="Yes, Alex Example's passport is in the local files [S1].",
+            ),
+        ]
+
+        result = rag.ask("When does his passport expire", history=history)
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("31.03.2027", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_passport_issue_location_question_answers_from_local_document_evidence(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-issue-place",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX EXAMPLE "
+                "Date de d6livrance/ Date of lssue 3t.03.2022 "
+                "Date d'expiration / Date 0f explry 3r.03.2027 "
+                "Lieu de d6llvrance/ Place ol issue BRUSSELS 13. Signature"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("Where was Alex Example's passport issued")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Brussels", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_passport_issue_location_followup_stays_local_to_active_document(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-issue-place-followup",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX EXAMPLE "
+                "Date de d6livrance/ Date of lssue 3t.03.2022 "
+                "Date d'expiration / Date 0f explry 3r.03.2027 "
+                "Lieu de d6llvrance/ Place ol issue BRUSSELS 13. Signature"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        first = rag.ask("When was Alex Example issued a passport")
+        history = [
+            ChatMessage(role="user", content="When was Alex Example issued a passport"),
+            ChatMessage(role="assistant", content=first.answer),
+        ]
+
+        result = rag.ask(
+            "the location where it was issued",
+            history=history,
+            conversation_state=first.conversation_state,
+        )
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Brussels", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.model_calls, [])
 
     def test_bare_person_query_resets_government_memory_and_uses_person_plan(self) -> None:
         rag = self._make_rag(
@@ -769,9 +914,9 @@ class RAGRoutingTests(unittest.TestCase):
             web_sources=[
                 WebSource(
                     label="W1",
-                    title="Damian Mingo profile",
-                    url="https://example.edu/damian-mingo",
-                    content="Damian Mingo has a university research profile.",
+                    title="Alex Jordan profile",
+                    url="https://example.edu/alex-jordan",
+                    content="Alex Jordan has a university research profile.",
                 )
             ],
         )
@@ -780,14 +925,14 @@ class RAGRoutingTests(unittest.TestCase):
             ChatMessage(role="assistant", content="The finance minister of France is listed by the government."),
         ]
 
-        result = rag.ask("Damian Mingo", history=history)
+        result = rag.ask("Alex Jordan", history=history)
 
         self.assertFalse(result.diagnostics["conversation_followup"])
         self.assertEqual(result.diagnostics["conversation_country"], "")
-        self.assertEqual(result.diagnostics["conversation_person"], "Damian Mingo")
+        self.assertEqual(result.diagnostics["conversation_person"], "Alex Jordan")
         self.assertEqual(result.diagnostics["search_plan_intent"], "person")
         self.assertIn("ORCID", result.diagnostics["search_plan_preferred_sources"])
-        self.assertIn("Damian Mingo GitHub", result.diagnostics["web_queries"])
+        self.assertIn("Alex Jordan GitHub", result.diagnostics["web_queries"])
         self.assertNotIn("France", result.diagnostics["resolved_query"])
 
     def test_government_statement_uses_official_source_plan(self) -> None:
@@ -964,7 +1109,7 @@ class RAGRoutingTests(unittest.TestCase):
         rag = self._make_rag(local_answer="This should not be called.", local_sources=[])
         rag.retriever = SequentialLocalRetriever([[], []])
 
-        result = rag.ask("Is Damian's language certificate in the local files?")
+        result = rag.ask("Is Alex's language certificate in the local files?")
 
         self.assertEqual(result.answer, LOCAL_FILE_NOT_FOUND)
         self.assertEqual(result.confidence, "low")
@@ -984,7 +1129,7 @@ class RAGRoutingTests(unittest.TestCase):
             document="language_certificate.pdf",
             page=1,
             chunk_id="language-certificate",
-            text="Damian Ndiwago Sproochentest language certificate result.",
+            text="Alex Sample Sproochentest language certificate result.",
             score=0.82,
         )
         rag = self._make_rag(local_answer="This should not be called.", local_sources=[])
@@ -1012,7 +1157,7 @@ class RAGRoutingTests(unittest.TestCase):
             chunk_id="certificate",
             text=(
                 "Luxembourg, le 30/01/2026. "
-                "Damian Mingo Ndiwago a regle le montant de 75 EUR en date du 12/10/2025 "
+                "Alex Jordan Sample a regle le montant de 75 EUR en date du 12/10/2025 "
                 "en vue de la passation de l'examen Sproochentest Letzebuergesch, "
                 "session 2025-12-17-Me."
             ),
@@ -1256,19 +1401,19 @@ class RAGRoutingTests(unittest.TestCase):
             web_sources=[
                 WebSource(
                     label="W1",
-                    title="Dylan Mingo",
+                    title="Dylan Jordan",
                     url="https://example.com/wrong",
                     content="Wrong person",
                 ),
                 WebSource(
                     label="W2",
-                    title="Damian Mingo profile",
-                    url="https://example.com/damian",
-                    content="Damian Mingo is mentioned here.",
+                    title="Alex Jordan profile",
+                    url="https://example.com/alex-jordan",
+                    content="Alex Jordan is mentioned here.",
                 ),
             ],
         )
-        result = rag.ask("Who is Damian Mingo?")
+        result = rag.ask("Who is Alex Jordan?")
 
         self.assertIn(result.confidence, {"medium", "high"})
         self.assertTrue(result.used_web)
@@ -1525,20 +1670,20 @@ class RAGRoutingTests(unittest.TestCase):
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
             model_answer=MODEL_UNKNOWN,
-            web_answer="Damian Ndiwago profile [W1]",
+            web_answer="Alex Sample profile [W1]",
             local_sources=[],
             web_sources=[],
         )
         rag._search_duckduckgo_fallback_queries = lambda queries: [
             WebSource(
                 label="W1",
-                title="Damian Ndiwago profile",
-                url="https://example.com/damian-ndiwago",
-                content="Damian Ndiwago is listed on this profile.",
+                title="Alex Sample profile",
+                url="https://example.com/alex-sample",
+                content="Alex Sample is listed on this profile.",
             )
         ]
 
-        result = rag.ask("Damian Ndiwago")
+        result = rag.ask("Alex Sample")
 
         self.assertEqual([source.label for source in result.web_sources], ["W1"])
         self.assertTrue(result.used_web)
@@ -1576,26 +1721,26 @@ class RAGRoutingTests(unittest.TestCase):
             page=1,
             chunk_id="certificate",
             text=(
-                "Luxembourg ATTESTATION Damian MINGO NDIWAGO paid for the "
+                "Luxembourg ATTESTATION ALEX JORDAN SAMPLE paid for the "
                 "Sproochentest language exam certificate."
             ),
             score=0.95,
         )
         rag = self._make_rag(
-            local_answer="Damian Mingo Ndiwago appears in a certificate [S1].",
+            local_answer="Alex Jordan Sample appears in a certificate [S1].",
             model_answer=MODEL_UNKNOWN,
             local_sources=[local_certificate],
             web_sources=[
                 WebSource(
                     label="W1",
-                    title="ORBilu: Profile of Damian MINGO NDIWAGO",
+                    title="ORBilu: Profile of ALEX JORDAN SAMPLE",
                     url="https://orbilu.uni.lu/profile?uid=50039094",
-                    content="Profile of Damian MINGO NDIWAGO at the University of Luxembourg.",
+                    content="Profile of ALEX JORDAN SAMPLE at the University of Luxembourg.",
                 )
             ],
         )
 
-        result = rag.ask("Damian Mingo Ndiwago")
+        result = rag.ask("Alex Jordan Sample")
 
         self.assertEqual(result.local_sources, [])
         self.assertTrue(result.used_web)
@@ -1643,11 +1788,11 @@ class RAGRoutingTests(unittest.TestCase):
     def test_reversed_name_identity_lookup_can_fall_back_to_strong_local_profile_evidence(self) -> None:
         local_profile = LocalSource(
             label="S1",
-            document="Damian_mingo_cv.pdf",
+            document="alex_jordan_cv.pdf",
             page=1,
             chunk_id="cv-profile",
             text=(
-                "Damian Mingo Ndiwago. University of Luxembourg doctoral researcher in "
+                "Alex Jordan Sample. University of Luxembourg doctoral researcher in "
                 "computational statistics. Contact details and profile summary."
             ),
             score=0.97,
@@ -1659,18 +1804,18 @@ class RAGRoutingTests(unittest.TestCase):
             web_sources=[
                 WebSource(
                     label="W1",
-                    title="Damian Mingo profile",
-                    url="https://example.com/damian-mingo",
-                    content="Damian Mingo has a university profile.",
+                    title="Alex Jordan profile",
+                    url="https://example.com/alex-jordan",
+                    content="Alex Jordan has a university profile.",
                 )
             ],
         )
 
-        result = rag.ask("Mingo Damian")
+        result = rag.ask("Jordan Alex")
 
         self.assertFalse(result.used_web)
         self.assertEqual([source.label for source in result.local_sources], ["S1"])
-        self.assertIn("Damian Mingo", result.answer)
+        self.assertIn("Alex Jordan", result.answer)
         self.assertIn("[S1]", result.answer)
         self.assertEqual(len(rag.generator.model_calls), 1)
         self.assertEqual(result.diagnostics["answer_verification_status"], "verified")
@@ -1757,7 +1902,7 @@ class RAGRoutingTests(unittest.TestCase):
     def test_scientific_lookup_uses_expanded_local_queries(self) -> None:
         thesis_source = LocalSource(
             label="S1",
-            document="damian-thesis.pdf",
+            document="alex-thesis.pdf",
             page=42,
             chunk_id="thesis-hremc",
             text=(
@@ -1781,7 +1926,7 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertTrue(
             any("Replica Exchange Hamiltonian Monte Carlo" in call[0][0] for call in rag.retriever.calls)
         )
-        self.assertEqual([source.document for source in result.local_sources], ["damian-thesis.pdf"])
+        self.assertEqual([source.document for source in result.local_sources], ["alex-thesis.pdf"])
         self.assertFalse(result.used_web)
         self.assertIn("[S1]", result.answer)
 
@@ -2386,14 +2531,14 @@ class RAGRoutingTests(unittest.TestCase):
             web_sources=[
                 WebSource(
                     label="W1",
-                    title="Dylan Mingo",
+                    title="Dylan Jordan",
                     url="https://example.com/dylan",
-                    content="Dylan Mingo is a different person.",
+                    content="Dylan Jordan is a different person.",
                 )
             ],
         )
 
-        result = rag.ask("Damian Mingo Ndiwago")
+        result = rag.ask("Alex Jordan Sample")
 
         self.assertEqual(result.local_sources, [])
         self.assertEqual(result.web_sources, [])
@@ -2437,7 +2582,7 @@ class RAGRoutingTests(unittest.TestCase):
             document="language_certificate.pdf",
             page=1,
             chunk_id="language-cert",
-            text="Damian Ndiwago Sproochentest language certificate exam result.",
+            text="Alex Sample Sproochentest language certificate exam result.",
             score=0.64,
         )
         rag = self._make_rag(local_answer="This should not be called.", local_sources=[])
@@ -2462,13 +2607,13 @@ class RAGRoutingTests(unittest.TestCase):
                     url="https://www.linkedin.com/posts/example-large-reasoning-models",
                     content=(
                         "Image 3 Image 4 Comments Like Comment Share Copy Link. "
-                        "Damian Ndiwago commented on this unrelated post."
+                        "Alex Sample commented on this unrelated post."
                     ),
                 )
             ],
         )
 
-        result = rag.ask("Damian Ndiwago")
+        result = rag.ask("Alex Sample")
 
         self.assertEqual(result.web_sources, [])
         self.assertFalse(result.used_web)
@@ -2588,20 +2733,20 @@ class RAGRoutingTests(unittest.TestCase):
     def test_model_capacity_error_during_model_fallback_uses_web_when_enabled(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
-            web_answer="Damian Ndiwago web answer [W1]",
+            web_answer="Alex Sample web answer [W1]",
             local_sources=[],
             web_sources=[
                 WebSource(
                     label="W1",
-                    title="Damian Ndiwago profile",
-                    url="https://example.com/damian",
-                    content="Damian Ndiwago profile.",
+                    title="Alex Sample profile",
+                    url="https://example.com/alex-sample",
+                    content="Alex Sample profile.",
                 )
             ],
         )
         rag.generator = ModelOnlyCapacityErrorGenerator()
 
-        result = rag.ask("Damian Ndiwago")
+        result = rag.ask("Alex Sample")
 
         self.assertIn(result.confidence, {"medium", "high"})
         self.assertTrue(result.used_web)

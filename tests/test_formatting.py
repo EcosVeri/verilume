@@ -21,8 +21,8 @@ class FormattingTests(unittest.TestCase):
         )
         github = WebSource(
             label="W2",
-            title="Damian Ndiwago",
-            url="https://github.com/DamingoNdiwa",
+            title="Alex Sample",
+            url="https://github.com/alex-sample",
             content="Research code repository.",
         )
 

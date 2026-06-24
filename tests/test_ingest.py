@@ -64,7 +64,7 @@ class IngestCleanupTests(unittest.TestCase):
     def test_document_metadata_is_extracted_from_research_text(self) -> None:
         text = """
         Replica Exchange Hamiltonian Monte Carlo for Hydrological Models
-        Damian Mingo Ndiwago
+        Alex Jordan Sample
         University of Luxembourg
 
         Abstract
@@ -84,7 +84,7 @@ class IngestCleanupTests(unittest.TestCase):
             metadata["document_title"],
             "Replica Exchange Hamiltonian Monte Carlo for Hydrological Models",
         )
-        self.assertIn("Damian Mingo Ndiwago", metadata["authors"])
+        self.assertIn("Alex Jordan Sample", metadata["authors"])
         self.assertIn("combines Hamiltonian Monte Carlo", metadata["abstract"])
         self.assertIn("Replica Exchange", metadata["keywords"])
         self.assertEqual(metadata["document_kind"], "research_paper")
@@ -117,16 +117,16 @@ class IngestCleanupTests(unittest.TestCase):
 
     def test_normalize_pdf_text_removes_icon_font_fragments(self) -> None:
         text = (
-            "Damian Mingo Ndiwago\n"
-            "Montmédy, L-2164 Luxembourg | /ne+352 661 667 328 | "
-            "ndiwagodamian@gmail.com | /gtb| /♀nedn\n"
+            "Alex Jordan Sample\n"
+            "Rue Example, L-1234 Luxembourg | /ne+352 600 000 000 | "
+            "alex.sample@example.com | /gtb| /♀nedn\n"
             "quanti-\n"
             "tative methods"
         )
 
         normalized = _normalize_pdf_text(text)
 
-        self.assertIn("Montmédy, L-2164 Luxembourg | +352 661 667 328 | ndiwagodamian@gmail.com", normalized)
+        self.assertIn("Rue Example, L-1234 Luxembourg | +352 600 000 000 | alex.sample@example.com", normalized)
         self.assertNotIn("/ne", normalized)
         self.assertNotIn("/gtb", normalized)
         self.assertNotIn("/♀nedn", normalized)

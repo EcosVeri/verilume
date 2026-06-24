@@ -168,6 +168,7 @@ LOCAL_FILE_MARKERS = (
 LOCAL_FILE_EXPANSIONS = {
     "certificate": ("certificate", "certification", "diploma", "credential", "language test", "sproochentest", "exam result"),
     "language": ("language", "sproochentest", "test", "exam", "certificate"),
+    "passport": ("passport", "place of issue", "date of issue", "date of expiry", "expiration"),
 }
 IDENTITY_STOPWORDS = {
     "about",
@@ -622,14 +623,25 @@ class VerilumeRAG:
         )
 
         query_understanding = self.query_understanding_agent.understand(question)
+        contextual_personal_document_fact_question = (
+            _is_contextual_personal_document_fact_query(original_question, conversation.state)
+            or _is_contextual_personal_document_fact_query(question, conversation.state)
+        )
+        personal_document_fact_question = (
+            _is_personal_document_fact_query(original_question)
+            or _is_personal_document_fact_query(question)
+            or contextual_personal_document_fact_question
+        )
         local_file_question = (
             self._is_local_file_question(original_question)
             or self._is_local_file_question(question)
             or interpretation.intent == "local_document"
+            or personal_document_fact_question
         )
         local_file_fact_question = (
             _should_answer_local_file_fact_from_evidence(original_question)
             or _should_answer_local_file_fact_from_evidence(question)
+            or personal_document_fact_question
         )
         query_understanding.local_file_question = local_file_question
         identity_tokens = _identity_tokens(question)
@@ -1743,9 +1755,97 @@ def _query_needs_context_cache_key(question: str) -> bool:
 
 def _should_answer_local_file_question_directly(question: str) -> bool:
     normalized = normalize_intent_text(question)
+    if _looks_like_local_document_attribute_question(normalized):
+        return False
     return bool(
         normalized.startswith(("which document", "which file", "what document", "what file"))
-        or re.search(r"\b(?:contains?|mentions?|where)\b", normalized)
+        or re.search(r"\b(?:contains?|mentions?)\b", normalized)
+    )
+
+
+def _looks_like_local_document_attribute_question(normalized_question: str) -> bool:
+    if not normalized_question:
+        return False
+    location_markers = ("place of issue", "where", "location", "issued in")
+    issue_markers = ("issue", "issued", "issuance", "delivrance")
+    return any(marker in normalized_question for marker in location_markers) and any(
+        marker in normalized_question for marker in issue_markers
+    )
+
+
+def _is_personal_document_fact_query(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+
+    if not re.search(r"\b(?:what|which|when|where|who|is|are|does|do|did)\b", normalized):
+        if not normalized.startswith(("place of issue", "date of issue", "date of expiry", "passport expiry")):
+            return False
+
+    document_nouns = (
+        "passport",
+        "certificate",
+        "diploma",
+        "attestation",
+        "visa",
+        "permit",
+        "license",
+        "transcript",
+        "identity card",
+        "id card",
+    )
+    fact_markers = (
+        "issue",
+        "issued",
+        "issuance",
+        "delivrance",
+        "expiration",
+        "expiry",
+        "expire",
+        "expires",
+        "valid",
+        "birth",
+        "born",
+        "nationality",
+        "number",
+        "place of birth",
+        "place of issue",
+        "location",
+    )
+
+    has_document_noun = any(noun in normalized for noun in document_nouns)
+    has_fact_marker = any(marker in normalized for marker in fact_markers)
+    if not (has_document_noun and has_fact_marker):
+        return False
+
+    if re.search(r"\b(?:his|her|their|my)\b", normalized):
+        return True
+    return len(_identity_tokens(question)) >= 2
+
+
+def _is_contextual_personal_document_fact_query(question: str, state: ConversationState | None) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized or state is None:
+        return False
+    if not _looks_like_local_document_attribute_question(normalized) and not normalized.startswith(
+        ("place of issue", "date of issue", "date of expiry", "passport expiry")
+    ):
+        return False
+
+    context_text = " ".join(
+        _unique_nonempty(
+            [
+                getattr(state, "active_document", ""),
+                getattr(state, "last_resolved_question", ""),
+                getattr(state, "last_answer_summary", ""),
+                *getattr(state, "active_documents", []),
+            ]
+        )
+    )
+    context_normalized = normalize_intent_text(context_text)
+    return any(
+        noun in context_normalized
+        for noun in ("passport", "certificate", "attestation", "visa", "permit", "license", "identity card")
     )
 
 
@@ -1829,27 +1929,123 @@ def _source_matches_explicit_local_file_name(source, file_names: Sequence[str]) 
 
 
 def _local_file_fact_answer(question: str, local_sources: Sequence[LocalSource], ranked_evidence) -> str:
+    direct_answer = _local_file_location_answer(question, local_sources)
+    if direct_answer:
+        return direct_answer
     direct_answer = _local_file_date_answer(question, local_sources)
     if direct_answer:
         return direct_answer
     return _fallback_from_ranked_evidence(ranked_evidence, question=question)
 
 
+def _local_file_location_answer(question: str, local_sources: Sequence[LocalSource]) -> str | None:
+    normalized = normalize_intent_text(question)
+    requested_location_kind = _local_file_requested_location_kind(normalized)
+    if requested_location_kind is None or not local_sources:
+        return None
+
+    best_source = local_sources[0]
+    best_place = _best_local_place_candidate(question, getattr(best_source, "text", ""))
+    if not best_place:
+        return None
+    subject_label = _local_source_document_label(best_source, normalized)
+
+    if requested_location_kind == "issue_place":
+        return f"The {subject_label} was issued in {best_place} [{best_source.label}].\n\nConfidence: High"
+
+    return None
+
+
+def _local_file_requested_location_kind(normalized_question: str) -> str | None:
+    if not normalized_question:
+        return None
+    if "place of issue" in normalized_question:
+        return "issue_place"
+    if re.search(r"\bissued\s+in\b", normalized_question):
+        return "issue_place"
+    if any(marker in normalized_question for marker in ("where", "location", "place")) and any(
+        marker in normalized_question for marker in ("issue", "issued", "issuance", "delivrance")
+    ):
+        return "issue_place"
+    return None
+
+
 def _local_file_date_answer(question: str, local_sources: Sequence[LocalSource]) -> str | None:
     normalized = normalize_intent_text(question)
-    if "date" not in normalized or not local_sources:
+    requested_date_kind = _local_file_requested_date_kind(normalized)
+    if requested_date_kind is None or not local_sources:
         return None
 
     best_source = local_sources[0]
     best_date = _best_local_date_candidate(question, getattr(best_source, "text", ""))
     if not best_date:
         return None
+    subject_label = _local_source_document_label(best_source, normalized)
+
+    if requested_date_kind == "issue":
+        return f"The {subject_label} was issued on {best_date} [{best_source.label}].\n\nConfidence: High"
+
+    if requested_date_kind == "expiry":
+        return f"The {subject_label} expires on {best_date} [{best_source.label}].\n\nConfidence: High"
 
     subject = _local_file_subject_from_question(question) or best_source.document
-    return (
-        f"The exam date on {subject} is {best_date} [{best_source.label}].\n\n"
-        "Confidence: High"
+    return f"The date on {subject} is {best_date} [{best_source.label}].\n\nConfidence: High"
+
+
+def _local_file_requested_date_kind(normalized_question: str) -> str | None:
+    if not normalized_question:
+        return None
+    if _local_file_requested_location_kind(normalized_question):
+        return None
+    if any(marker in normalized_question for marker in ("expiration", "expiry", "expire", "expires")):
+        return "expiry"
+    if any(marker in normalized_question for marker in ("issue", "issued", "issuance", "delivrance")):
+        return "issue"
+    if "date" in normalized_question:
+        return "date"
+    return None
+
+
+def _local_source_document_label(source: LocalSource, normalized_question: str) -> str:
+    if "passport" in normalized_question:
+        return "passport"
+    text = _normalized_source_text(source)
+    for noun in ("passport", "certificate", "attestation", "visa", "permit", "license", "transcript"):
+        if noun in text:
+            return noun
+    return "document"
+
+
+def _best_local_place_candidate(question: str, text: str) -> str | None:
+    if not text:
+        return None
+
+    normalized_text = _normalize_ocr_location_context(text)
+    patterns = (
+        r"(?:place of issue|lieu de delivrance)\s+(?P<place>[a-z][a-z\s'’-]{2,40}?)(?=\s+(?:\d{1,2}\.?|signature|bearer|profession|occupation|height|date|place of birth)\b|$)",
+        r"(?:issued in)\s+(?P<place>[a-z][a-z\s'’-]{2,40}?)(?=\s+(?:\d{1,2}\.?|signature|bearer|profession|occupation|height|date|place of birth)\b|$)",
     )
+    for pattern in patterns:
+        match = re.search(pattern, normalized_text)
+        if not match:
+            continue
+        place = re.sub(r"\s+", " ", match.group("place")).strip(" .,;:-")
+        if not place:
+            continue
+        return _title_local_place(place)
+    return None
+
+
+def _title_local_place(value: str) -> str:
+    words = []
+    for word in re.split(r"\s+", (value or "").strip()):
+        if not word:
+            continue
+        if word.isupper() and len(word) <= 4:
+            words.append(word)
+        else:
+            words.append(word[:1].upper() + word[1:].lower())
+    return " ".join(words)
 
 
 def _best_local_date_candidate(question: str, text: str) -> str | None:
@@ -1857,6 +2053,12 @@ def _best_local_date_candidate(question: str, text: str) -> str | None:
         return None
 
     normalized_question = _fold_text(question)
+    issue_date_requested = bool(
+        re.search(r"\b(?:issue|issued|issuance|delivrance)\b", normalized_question)
+    )
+    expiry_date_requested = bool(
+        re.search(r"\b(?:expiration|expiry|expire|expires|valid until)\b", normalized_question)
+    )
     exam_date_requested = bool(
         re.search(r"\b(?:exam|test|session)\s+date\b", normalized_question)
         or ("date" in normalized_question and "exam" in normalized_question)
@@ -1867,6 +2069,10 @@ def _best_local_date_candidate(question: str, text: str) -> str | None:
         or "paid on" in normalized_question
     )
     preferred_terms: list[str] = []
+    if issue_date_requested:
+        preferred_terms.extend(["date of issue", "issued", "date de delivrance", "delivrance"])
+    if expiry_date_requested:
+        preferred_terms.extend(["date of expiry", "expiration", "expiry", "expire"])
     if exam_date_requested or any(term in normalized_question for term in ("exam", "session", "test")):
         preferred_terms.extend(["session", "exam", "examen", "sproochentest", "passation"])
     if payment_date_requested:
@@ -1875,11 +2081,31 @@ def _best_local_date_candidate(question: str, text: str) -> str | None:
         preferred_terms.append("date")
 
     candidates: list[tuple[int, int, str]] = []
-    for match in re.finditer(r"\b(?:\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2}(?:-[A-Za-z]{2})?)\b", text):
+    for match in _ocr_tolerant_date_matches(text):
         raw_value = match.group(0)
-        normalized_value = re.sub(r"^(\d{4}-\d{2}-\d{2})-[A-Za-z]{2}$", r"\1", raw_value)
-        context = _fold_text(text[max(0, match.start() - 48) : min(len(text), match.end() + 48)])
+        normalized_value = _normalize_ocr_date_token(raw_value)
+        if not normalized_value:
+            continue
+        context = _normalize_ocr_date_context(
+            text[max(0, match.start() - 48) : min(len(text), match.end() + 48)]
+        )
+        leading_context = _normalize_ocr_date_context(text[max(0, match.start() - 32) : match.start()])
         score = sum(3 for term in preferred_terms if term in context)
+
+        if issue_date_requested:
+            if any(term in leading_context for term in ("date of issue", "issued", "date de delivrance", "delivrance")):
+                score += 8
+            elif any(term in context for term in ("date of issue", "issued", "date de delivrance", "delivrance")):
+                score += 2
+            if any(term in leading_context for term in ("date of expiry", "expiration", "expiry", "expire")):
+                score -= 8
+        if expiry_date_requested:
+            if any(term in leading_context for term in ("date of expiry", "expiration", "expiry", "expire")):
+                score += 8
+            elif any(term in context for term in ("date of expiry", "expiration", "expiry", "expire")):
+                score += 2
+            if any(term in leading_context for term in ("date of issue", "issued", "date de delivrance", "delivrance")):
+                score -= 8
 
         if exam_date_requested:
             if "session" in context:
@@ -1900,10 +2126,82 @@ def _best_local_date_candidate(question: str, text: str) -> str | None:
     if not candidates:
         return None
 
-    best_score, _position, best_value = max(candidates, key=lambda item: (item[0], item[1]))
+    if issue_date_requested and not expiry_date_requested:
+        best_score, _position, best_value = max(candidates, key=lambda item: (item[0], -item[1]))
+    else:
+        best_score, _position, best_value = max(candidates, key=lambda item: (item[0], item[1]))
     if best_score <= 0:
         return None
     return best_value
+
+
+_OCR_TOLERANT_DATE_PATTERN = re.compile(
+    r"\b(?:[0-9OoIiLlTtRrSsBbZz]{2}[./-][0-9OoIiLlTtRrSsBbZz]{2}[./-][0-9OoIiLlTtRrSsBbZz]{4}|"
+    r"[0-9OoIiLlTtRrSsBbZz]{4}-[0-9OoIiLlTtRrSsBbZz]{2}-[0-9OoIiLlTtRrSsBbZz]{2}(?:-[A-Za-z]{2})?)\b"
+)
+_OCR_DATE_TRANSLATION = str.maketrans(
+    {
+        "B": "8",
+        "b": "8",
+        "I": "1",
+        "i": "1",
+        "L": "1",
+        "l": "1",
+        "O": "0",
+        "o": "0",
+        "R": "1",
+        "r": "1",
+        "S": "5",
+        "s": "5",
+        "T": "1",
+        "t": "1",
+        "Z": "2",
+        "z": "2",
+    }
+)
+
+
+def _ocr_tolerant_date_matches(text: str):
+    return _OCR_TOLERANT_DATE_PATTERN.finditer(text or "")
+
+
+def _normalize_ocr_date_token(value: str) -> str | None:
+    compact = (value or "").strip()
+    if not compact:
+        return None
+
+    iso_match = re.fullmatch(
+        r"(?P<date>[0-9OoIiLlTtRrSsBbZz]{4}-[0-9OoIiLlTtRrSsBbZz]{2}-[0-9OoIiLlTtRrSsBbZz]{2})(?:-[A-Za-z]{2})?",
+        compact,
+    )
+    if iso_match:
+        normalized = iso_match.group("date").translate(_OCR_DATE_TRANSLATION)
+        return normalized if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized) else None
+
+    localized_match = re.fullmatch(
+        r"[0-9OoIiLlTtRrSsBbZz]{2}[./-][0-9OoIiLlTtRrSsBbZz]{2}[./-][0-9OoIiLlTtRrSsBbZz]{4}",
+        compact,
+    )
+    if not localized_match:
+        return None
+
+    normalized = compact.translate(_OCR_DATE_TRANSLATION)
+    return normalized if re.fullmatch(r"\d{2}[./-]\d{2}[./-]\d{4}", normalized) else None
+
+
+def _normalize_ocr_date_context(text: str) -> str:
+    normalized = _fold_text(text)
+    replacements = (
+        (r"\b0f\b", "of"),
+        (r"\blssue\b", "issue"),
+        (r"\b1ssue\b", "issue"),
+        (r"\bd6livrance\b", "delivrance"),
+        (r"\bexplry\b", "expiry"),
+        (r"\bexp1ry\b", "expiry"),
+    )
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized)
+    return normalized
 
 
 def _local_file_subject_from_question(question: str) -> str | None:
@@ -2170,7 +2468,60 @@ def _local_search_queries(
     if _looks_like_scientific_local_query(cleaned):
         candidates.extend(_scientific_local_queries(normalized))
 
+    if local_file_question and (
+        _is_personal_document_fact_query(cleaned)
+        or _is_personal_document_fact_query(stripped)
+        or "passport" in cleaned.lower()
+    ):
+        candidates.extend(_personal_document_local_queries(cleaned, identity_tokens))
+
     return _unique_nonempty(candidates)[:6]
+
+
+def _personal_document_local_queries(query: str, identity_tokens: Sequence[str]) -> list[str]:
+    normalized = normalize_intent_text(query)
+    name = " ".join(identity_tokens).strip()
+    document = "passport" if "passport" in normalized else "document"
+    variants: list[str] = []
+
+    if _local_file_requested_location_kind(normalized):
+        if name:
+            variants.extend(
+                [
+                    f"{name} {document} place of issue",
+                    f"{name} {document} issued in",
+                ]
+            )
+        variants.extend([f"{document} place of issue", f"{document} issued in"])
+    elif any(marker in normalized for marker in ("issue", "issued", "issuance", "delivrance")):
+        if name:
+            variants.append(f"{name} {document} date of issue")
+        variants.extend([f"{document} date of issue", f"{document} issued"])
+    elif any(marker in normalized for marker in ("expiration", "expiry", "expire", "expires")):
+        if name:
+            variants.append(f"{name} {document} date of expiry")
+        variants.extend([f"{document} date of expiry", f"{document} expires"])
+
+    return _unique_nonempty([query, *variants])
+
+
+def _normalize_ocr_location_context(text: str) -> str:
+    normalized = _fold_text(text)
+    replacements = (
+        (r"\b0f\b", "of"),
+        (r"\bol\b", "of"),
+        (r"\boi\b", "of"),
+        (r"\blssue\b", "issue"),
+        (r"\b1ssue\b", "issue"),
+        (r"\bplace\s+oi\s+issue\b", "place of issue"),
+        (r"\bplace\s+ol\s+issue\b", "place of issue"),
+        (r"\bd6llvrance\b", "delivrance"),
+        (r"\bd6livrance\b", "delivrance"),
+        (r"\bdellvrance\b", "delivrance"),
+    )
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized)
+    return re.sub(r"\s+", " ", normalized)
 
 
 def _query_variant_is_useful(original: str, candidate: str) -> bool:
@@ -4647,7 +4998,7 @@ def _noisy_scientific_sentence(sentence: str) -> bool:
     lower = (sentence or "").lower()
     if lower.startswith(("dtu driven", "download ", "pdf ", "copyright ")):
         return True
-    if re.search(r"\bdamian\s+n\.?\b|\bpage\s+\d+\b", lower):
+    if re.search(r"\b[a-z]{3,}\s+[a-z]\.\b|\bpage\s+\d+\b", lower):
         return True
     if re.search(r"\blog\s*p\b|[≈∑θβ]|\\theta|\\beta|\bn\s+x\b|\bs\s+x\b", lower):
         return True

@@ -40,9 +40,9 @@ def test_smallest_country_query_uses_local_model_and_web() -> None:
     )
 
     assert result.intent == "public_knowledge"
-    assert result.use_web
     assert result.use_local
     assert result.use_model_knowledge
+    assert not result.use_web
     assert any("smallest country in Europe" in query for query in result.search_queries)
 
 
@@ -58,3 +58,16 @@ def test_president_of_smallest_country_uses_head_of_state_queries() -> None:
     assert result.use_local
     assert result.use_model_knowledge
     assert any("head of state" in query for query in result.search_queries)
+
+
+def test_general_people_question_stays_local_first_by_default() -> None:
+    result = QueryInterpretationAgent().interpret(
+        "Where is Damian from",
+        [],
+        ConversationState(),
+    )
+
+    assert result.intent == "general"
+    assert result.use_local
+    assert result.use_model_knowledge
+    assert not result.use_web

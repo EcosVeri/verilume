@@ -1072,7 +1072,7 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(rag.web_search.queries, [])
 
-    def test_local_gap_uses_model_and_web_when_web_is_enabled(self) -> None:
+    def test_local_gap_uses_model_before_web_when_web_is_enabled(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
             model_answer="Econometrics applies statistical methods to economic data.",
@@ -1080,11 +1080,12 @@ class RAGRoutingTests(unittest.TestCase):
         )
         result = rag.ask("What is econometrics?")
 
-        self.assertEqual(result.confidence, "web-assisted")
-        self.assertTrue(result.used_web)
+        self.assertEqual(result.confidence, "model-only")
+        self.assertFalse(result.used_web)
         self.assertIn("Econometrics", result.answer)
         self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertNotEqual(result.web_sources, [])
+        self.assertEqual(result.web_sources, [])
+        self.assertEqual(rag.web_search.queries, [])
 
     def test_model_knowledge_and_web_search_run_in_parallel_after_local_gap(self) -> None:
         rag = self._make_rag(

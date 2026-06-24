@@ -127,9 +127,9 @@ class LocalFirstWorkflowTests(unittest.TestCase):
 
         self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.used_web)
-        self.assertEqual(result.confidence, "web-assisted")
-        self.assertEqual(result.diagnostics.get("evidence_winner"), "web")
+        self.assertFalse(result.used_web)
+        self.assertEqual(result.confidence, "model-only")
+        self.assertEqual(result.diagnostics.get("evidence_winner"), "model_knowledge")
         self.assertIn("Econometrics", result.answer)
 
     def test_explicit_web_request_uses_web_after_local_and_model(self) -> None:

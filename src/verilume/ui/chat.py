@@ -280,6 +280,7 @@ def _render_evidence_badges(response: RAGResponse) -> None:
 
 def _render_evidence_summary(response: RAGResponse) -> None:
     origin, confidence, source_type = _answer_origin(response)
+    diagnostics = response.diagnostics or {}
     source_count = _supporting_source_count(response)
     source_count_label = _supporting_source_count_label(source_count)
     badges = [origin, f"Confidence: {confidence}", source_type]
@@ -305,11 +306,32 @@ def _render_evidence_summary(response: RAGResponse) -> None:
         if rendered_strength
         else ""
     )
+    search_mode = _summary_search_mode(diagnostics)
+    searched = _summary_source_list(diagnostics.get("sources_searched"))
+    used = _summary_source_list(diagnostics.get("sources_used"))
+    winner = _friendly_token(str(diagnostics.get("evidence_winner") or ""))
+    summary_rows = "".join(
+        (
+            '<div class="veri-evidence-summary-row">'
+            f'<span>{escape(label)}</span>'
+            f'<strong>{escape(value)}</strong>'
+            "</div>"
+        )
+        for label, value in (
+            ("Search mode", search_mode),
+            ("Sources searched", searched),
+            ("Sources used", used),
+            ("Winner", winner),
+        )
+        if value
+    )
+    rows_block = f'<div class="veri-evidence-summary-rows">{summary_rows}</div>' if summary_rows else ""
     st.markdown(
         f"""
 <div class="veri-evidence-summary">
   <div class="veri-evidence-summary-title">Evidence Summary</div>
   <div class="veri-evidence-summary-badges">{rendered_badges}</div>
+  {rows_block}
   {strength_block}
 </div>
         """,
@@ -322,6 +344,25 @@ def _supporting_source_count_label(source_count: int) -> str:
         return ""
     noun = "source" if source_count == 1 else "sources"
     return f"{source_count} supporting {noun}"
+
+
+def _summary_search_mode(diagnostics: dict[str, Any]) -> str:
+    policy = diagnostics.get("search_policy") or {}
+    if isinstance(policy, dict) and policy.get("mode"):
+        return _friendly_token(str(policy.get("mode")))
+    return _friendly_token(str(diagnostics.get("search_mode_key") or diagnostics.get("search_mode") or ""))
+
+
+def _summary_source_list(value: Any) -> str:
+    if not isinstance(value, (list, tuple)):
+        return ""
+    labels = []
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        labels.append({"ai": "AI", "model_knowledge": "AI"}.get(text, _friendly_token(text)))
+    return ", ".join(labels)
 
 
 def _render_evidence_details(response: RAGResponse) -> None:
@@ -496,6 +537,9 @@ def _evidence_detail_rows(response: RAGResponse) -> list[tuple[str, str]]:
     diagnostics = response.diagnostics or {}
     fields = (
         ("Evidence note", _friendly_evidence_note(diagnostics.get("evidence_note"))),
+        ("Search mode", _summary_search_mode(diagnostics)),
+        ("Sources searched", _summary_source_list(diagnostics.get("sources_searched"))),
+        ("Sources used", _summary_source_list(diagnostics.get("sources_used"))),
         ("Freshness note", diagnostics.get("freshness_note")),
         ("Local older than web", diagnostics.get("local_is_older_than_web")),
         ("Source agreement", diagnostics.get("source_agreement")),

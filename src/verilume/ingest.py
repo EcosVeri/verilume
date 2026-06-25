@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
     fcntl = None
 
 from verilume.core.embeddings import EmbeddingService
+from verilume.core.equation_repair import repair_math_text
 from verilume.core.retrieval import ChromaRetriever
 from verilume.core.schemas import DocumentChunk, IngestResult
 from verilume.settings import AppSettings, ensure_app_dirs
@@ -553,6 +554,7 @@ def _parse_file(
     document_metadata = _extract_document_metadata(path, pages, settings)
     chunks: list[DocumentChunk] = []
     for page, text in pages:
+        text = repair_math_text(text)
         chunker = chunk_text_semantic
         if getattr(settings, "chunk_strategy", "semantic") in {"paragraph", "legacy"}:
             chunker = chunk_text_by_paragraphs

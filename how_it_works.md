@@ -31,9 +31,13 @@ The main files and their jobs are:
 | `src/verilume/core/multimodal_store.py` | SQLite store for visual items, OCR text, formula text, captions, bounding boxes, and image paths. |
 | `src/verilume/core/multimodal_retrieval.py` | Retrieves visual/OCR evidence for page, figure, formula, plot, and scanned-image questions. |
 | `src/verilume/core/figure_captioning.py` | Conservative fallback captioning from existing captions, OCR text, or formula text. |
+| `src/verilume/core/entity_filter.py` | Strict short-name/entity filtering so bare person-name queries cannot use unrelated local or web chunks. |
+| `src/verilume/core/equation_repair.py` | Conservative repair for obvious OCR/PDF equation extraction errors before local chunking. |
 | `src/verilume/core/retrieval.py` | Chroma retriever with dense, lexical, and hybrid retrieval. |
 | `src/verilume/core/query_interpreter.py` | Interprets user intent, follow-up context, source policy, and search preferences. |
 | `src/verilume/core/search_planner.py` | Produces a search plan describing whether local, model knowledge, or web evidence should be used. |
+| `src/verilume/core/search_modes.py` | Canonical search-mode enum and label/parser helpers. |
+| `src/verilume/core/search_policy.py` | Strict source-use policy for local, AI, and web decisions based on the selected search mode and current/dynamic status. |
 | `src/verilume/core/semantic_cache.py` | Persistent semantic answer cache keyed by question meaning, evidence policy, document fingerprint, web settings, backend, and model. |
 | `src/verilume/core/table_store.py` | SQLite-backed table metadata store with local CSV snapshots. |
 | `src/verilume/core/table_retrieval.py` | Finds the best local table for numerical questions. |
@@ -65,9 +69,10 @@ When files are uploaded or `verilume ingest` is run, Verilume does the following
 2. Route the file to a format-specific handler.
 3. Extract text page by page for PDF files, slide by slide for PowerPoint files, OCR image uploads directly, and read full text for DOCX, TXT, Markdown, and CSV files.
 4. Normalize extracted text before indexing. For PDFs this includes cleanup for broken icon-font fragments and hyphenated line breaks.
-4. Split the content into chunks using semantic chunking by default.
-5. Compute embeddings for each chunk.
-6. Store chunk text, metadata, and embeddings in Chroma.
+5. Repair only math-looking lines with obvious OCR/PDF equation notation errors.
+6. Split the content into chunks using semantic chunking by default.
+7. Compute embeddings for each chunk.
+8. Store chunk text, metadata, and embeddings in Chroma.
 
 The current ingest pipeline uses a staged rebuild-and-swap model instead of mutating the live Chroma store in place. In practice that means Verilume builds a temporary Chroma database and manifest first, and only swaps them into `~/.verilume` after a successful ingest. This makes resets and rebuilds much more reliable.
 
@@ -244,6 +249,15 @@ The modes are:
 
 Auto remains the default because it preserves the local-first safety model. The explicit modes are user controls; they should not be used by the classifier as hidden defaults.
 
+Search mode enforcement is centralized in `SearchPolicy`. The query interpreter can suggest intent and useful search queries, but it cannot override the selected search mode:
+
+- `Local Only` searches local evidence only.
+- `Local + AI` searches local evidence and asks model knowledge, but never searches web.
+- `Local + AI + Web` searches exactly local, AI, and web when web is configured; AI is demoted for current/dynamic facts.
+- `Web Only` searches web only and blocks local/model factual evidence.
+- `Research Mode` searches local, AI, and web with the same current/dynamic AI demotion.
+- `Auto` searches local first, combines AI for stable questions, and uses web when enabled or needed.
+
 ### 5.9 Semantic answer cache
 
 Verilume now has two answer caches:
@@ -389,9 +403,33 @@ Each strategy records:
 - answer-verification or faithfulness score when available
 - diagnostics from the underlying RAG pass
 
-The benchmark report picks a best mode using confidence, source count, faithfulness, and latency. The UI shows a `Benchmark Results` table and collapsed per-mode answers so the user can compare behavior without losing the normal answer-first experience.
+The benchmark report picks a best diagnostic mode using confidence, source count, faithfulness, and latency. The normal Verilume answer remains the main answer. The UI then shows a `Benchmark Results` table and collapsed per-mode answers below the normal answer so the user can compare behavior without losing the answer-first experience.
 
 Benchmark Mode is not meant to replace Auto routing. It is a research and debugging tool for checking whether local, model, web, or full hybrid evidence is producing the strongest answer for a given question.
+
+Each benchmark mode is wrapped independently. If one strategy fails, the benchmark table records that failure and the app still returns the normal answer.
+
+### 5.15 Short entity filtering
+
+Short name-like prompts such as `Rene`, `Christophe Ley`, `Gabriella Vinco`, `Florian Felice`, and `Damian Mingo Ndiwago` use strict entity filtering before evidence ranking.
+
+For these prompts, local candidates must match the queried entity in the document name or source text. Web candidates must match the entity in the title, URL, or snippet. One-word names require an exact word-boundary match. Multi-part names require all or nearly all meaningful name parts.
+
+This prevents unrelated chunks, such as language-test pages or regression examples, from being treated as evidence for a person lookup. If no reliable source matches the exact entity/name, Verilume returns a low-confidence no-match answer instead of blending unrelated evidence.
+
+Lowercase concept prompts such as `photonics` are not treated as person/entity lookups. Natural-language prompts such as `what is photonics` and `The largest country in Europe` remain normal knowledge questions.
+
+### 5.16 Equation repair
+
+Equation repair runs during ingestion before chunking. It only touches lines that already look mathematical, for example lines containing `=` and regression markers such as `price`, `beta`, `b0`, `b1`, `m2`, `age`, `dis`, or `epsilon`.
+
+The safe regression repair currently normalizes the apartment-price equation to:
+
+```text
+PRICE = β₀ + β₁M2 + β₂AGE + β₃DIS + ε
+```
+
+Ordinary text is not globally rewritten. In particular, the repair layer does not replace normal letters with Greek symbols unless the line already looks like an equation.
 
 ## 6. How Verilume Decides on the Final Answer
 
@@ -564,7 +602,7 @@ The UI renders the answer first. Evidence metadata is intentionally placed below
 The answer layout is:
 
 1. Direct answer text.
-2. Evidence Summary with source type, confidence, source count, agreement/freshness notes, and source-strength bars.
+2. Evidence Summary with search mode, searched sources, used sources, winner, source type, confidence, source count, agreement/freshness notes, and source-strength bars.
 3. Expandable evidence analysis.
 4. Local document citations and web source groups.
 
@@ -605,6 +643,8 @@ The practical answer policy is:
 9. If web search is disabled and local evidence is missing, AI knowledge can answer stable questions by itself.
 10. The final answer is selected by ranking the surviving local, model, and web evidence streams rather than blindly trusting whichever stream ran last.
 11. Never allow unsupported citations or obviously wrong same-name identity pages to decide the answer.
+12. Benchmark Mode is diagnostic only; it never replaces the normal answer.
+13. Search mode is the final source-use authority.
 
 ## 10. Roadmap From Current Suggestions
 
@@ -616,6 +656,8 @@ Several suggested improvements are now partially implemented and documented, whi
 | Search modes | Implemented in settings, sidebar, and RAG routing. |
 | Source confidence bars | Implemented in the Evidence Summary for Local, Web, and AI streams. |
 | Benchmark mode | Implemented as an opt-in sidebar diagnostic that compares Full, Local Only, AI Only, and Web Only answer strategies. |
+| Strict search policy | Implemented through `SearchMode` and `SearchPolicy`; the interpreter cannot override the selected mode. |
+| Equation repair | Implemented conservatively for math-looking local text before chunking. |
 | Progressive generation stages | Partially implemented through the Streamlit evidence-collection status log. More granular streaming token output is still future work. |
 | Entity verification | Implemented for person/company evidence filtering, web title/content/URL contamination checks, and entity-match scoring; still the top retrieval quality priority. |
 | Duplicate clustering | Implemented for exact URL/source merging and normalized-title clustering in identity web results. Broader semantic clustering across mirrors is future work. |

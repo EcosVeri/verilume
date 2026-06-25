@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import logging
 import re
 import time
 import unicodedata
@@ -46,6 +47,7 @@ from verilume.core.benchmark import (
 from verilume.core.citation_verifier import CitationVerificationAgent
 from verilume.core.conversation_state import ConversationState
 from verilume.core.embeddings import EmbeddingService
+from verilume.core.entity_filter import is_short_entity_query, source_matches_entity
 from verilume.core.evidence import (
     build_final_answer_payload,
     classify_question,
@@ -77,6 +79,8 @@ from verilume.core.query_interpreter import (
 from verilume.core.reranking import query_terms, rerank_local_sources, rerank_web_sources
 from verilume.core.retrieval import ChromaRetriever
 from verilume.core.schemas import ChatMessage, LocalSource, RAGResponse, WebSource
+from verilume.core.search_modes import SearchMode, search_mode_from_settings
+from verilume.core.search_policy import SearchPolicy, policy_for_mode
 from verilume.core.search_planner import SearchPlanner
 from verilume.core.semantic_cache import (
     SemanticCache,
@@ -97,6 +101,7 @@ from verilume.settings import AppSettings, ensure_app_dirs
 from verilume.utils.document_stats import collect_document_stats
 
 MAX_WEB_SOURCES_TO_SHOW = 6
+LOGGER = logging.getLogger(__name__)
 WEB_QUERY_FANOUT_LIMIT = 5
 LOCAL_FILE_NOT_FOUND = "I could not find this in the indexed local files."
 DEFAULT_RESPONSE_CACHE_TTL_SECONDS = 300.0
@@ -558,6 +563,40 @@ class VerilumeRAG:
         on_stage: Callable[[str], None] | None = None,
     ) -> RAGResponse:
         history = history or []
+        try:
+            return self._ask_impl(question, history, conversation_state, should_stop, on_stage)
+        except GenerationStopped:
+            raise
+        except Exception as exc:
+            LOGGER.exception("RAG pipeline failed.")
+            state = conversation_state or self.conversation_context_agent.state_from_history(list(history))
+            response = RAGResponse(
+                answer=(
+                    "I could not complete the full evidence pipeline for this question. "
+                    "Please check the logs for details."
+                ),
+                local_sources=[],
+                web_sources=[],
+                used_web=False,
+                confidence="generation-error",
+                diagnostics={
+                    "error": _clean_error_message(exc),
+                    "pipeline_failed": True,
+                    "sources_searched": [],
+                    "sources_used": [],
+                    "evidence_winner": "none",
+                },
+            )
+            return _attach_conversation_state(response, state, question, question)
+
+    def _ask_impl(
+        self,
+        question: str,
+        history: Sequence[ChatMessage],
+        conversation_state: ConversationState | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        on_stage: Callable[[str], None] | None = None,
+    ) -> RAGResponse:
         if getattr(self.settings, "benchmark_mode", False):
             return self._ask_benchmark(question, history, conversation_state, should_stop, on_stage)
 
@@ -596,12 +635,13 @@ class VerilumeRAG:
         _check_generation_stop(should_stop)
         _emit_stage(on_stage, "Benchmark: preparing strategy comparison...")
         results = []
+        normal_response: RAGResponse | None = None
         for mode, mode_settings in _benchmark_mode_settings(self.settings):
             _check_generation_stop(should_stop)
             _emit_stage(on_stage, f"Benchmark: running {_benchmark_mode_label(mode)}...")
             started = time.perf_counter()
             try:
-                service = self if mode == FULL else VerilumeRAG(mode_settings)
+                service = VerilumeRAG(mode_settings)
                 response = service._ask_uncached(
                     question,
                     history,
@@ -623,6 +663,8 @@ class VerilumeRAG:
                 )
             latency = time.perf_counter() - started
             results.append(make_benchmark_result(mode, response, latency))
+            if mode == FULL:
+                normal_response = response
             _emit_stage(on_stage, f"✓ Benchmark: {_benchmark_mode_label(mode)} ready")
 
         best_mode = choose_best_mode(results)
@@ -632,7 +674,11 @@ class VerilumeRAG:
             best_mode=best_mode,
             notes=benchmark_notes(results, best_mode),
         )
-        response = report.to_rag_response()
+        response = normal_response or report.to_rag_response()
+        response.diagnostics = dict(response.diagnostics or {})
+        response.diagnostics["benchmark_mode"] = True
+        response.diagnostics["benchmark_report"] = report.to_dict()
+        response.diagnostics["benchmark_best_mode"] = best_mode
         state = conversation_state or self.conversation_context_agent.state_from_history(list(history))
         return _attach_conversation_state(response, state, question, question)
 
@@ -981,7 +1027,45 @@ class VerilumeRAG:
             )
             .build()
         )
-        table_response = self._answer_table_question_if_possible(query, diagnostics, on_stage)
+        force_web = self._is_web_requested(question)
+        search_mode = _search_mode_key(self.settings)
+        provider_web_ready = bool(
+            self.settings.enable_web_search
+            and getattr(self.web_search, "is_configured", True)
+        )
+        current_web_validation = _requires_current_source_verification(
+            question,
+            query_understanding,
+        )
+        current_or_dynamic = bool(current_web_validation)
+        search_policy = policy_for_mode(
+            search_mode_from_settings(search_mode),
+            web_enabled=provider_web_ready,
+            current_or_dynamic=current_or_dynamic,
+        )
+        allow_local_search = search_policy.use_local
+        allow_model_knowledge = search_policy.use_ai
+        allow_web_search = search_policy.use_web
+        force_hybrid_web = search_policy.mode in {
+            SearchMode.LOCAL_AI_WEB,
+            SearchMode.RESEARCH,
+            SearchMode.WEB_ONLY,
+        }
+        diagnostics["search_mode_key"] = search_mode
+        diagnostics["search_policy"] = _search_policy_diagnostics(search_policy)
+        diagnostics["search_policy_reason"] = search_policy.reason
+        diagnostics["sources_searched"] = list(search_policy.sources_searched)
+        diagnostics["search_mode_allows_local"] = allow_local_search
+        diagnostics["search_mode_allows_model"] = allow_model_knowledge
+        diagnostics["search_mode_allows_web"] = allow_web_search
+        if current_or_dynamic and not allow_model_knowledge:
+            diagnostics["model_skipped_for_current_web"] = True
+
+        table_response = (
+            self._answer_table_question_if_possible(query, diagnostics, on_stage)
+            if allow_local_search
+            else None
+        )
         if table_response is not None:
             updated_state = update_state_from_answer(
                 conversation.state,
@@ -995,23 +1079,18 @@ class VerilumeRAG:
             table_response.diagnostics["conversation_person"] = updated_state.active_person
             return _attach_conversation_state(table_response, updated_state, original_question, question)
 
-        force_web = self._is_web_requested(question)
-        search_mode = _search_mode_key(self.settings)
-        allow_local_search = _search_mode_allows_local(search_mode)
-        allow_model_knowledge = _search_mode_allows_model(search_mode)
-        allow_web_search = _search_mode_allows_web(search_mode)
-        force_hybrid_web = search_mode in {"local_ai_web", "research", "web_only"}
-        diagnostics["search_mode_key"] = search_mode
-        diagnostics["search_mode_allows_local"] = allow_local_search
-        diagnostics["search_mode_allows_model"] = allow_model_knowledge
-        diagnostics["search_mode_allows_web"] = allow_web_search
         planned_web = search_plan.need_web
         web_ready = bool(
             self.settings.enable_web_search
             and allow_web_search
             and getattr(self.web_search, "is_configured", True)
         )
-        current_or_web = bool(force_web or time_sensitive or force_hybrid_web or (planned_web and not search_plan.need_local))
+        current_or_web = bool(
+            (force_web and allow_web_search)
+            or time_sensitive
+            or force_hybrid_web
+            or (planned_web and allow_web_search and not search_plan.need_local)
+        )
         expanded_web_queries = _web_queries(question, query, search_plan)
         if search_plan.intent == "government":
             web_queries = _dedupe_web_queries([*expanded_web_queries, *semantic_plan.search_queries])
@@ -1030,7 +1109,11 @@ class VerilumeRAG:
         diagnostics["local_queries"] = local_queries
         graph_context = None
         graph_sources: list[LocalSource] = []
-        if self._graphrag_enabled and getattr(self.settings, "enable_graphrag", True):
+        if (
+            allow_local_search
+            and self._graphrag_enabled
+            and getattr(self.settings, "enable_graphrag", True)
+        ):
             graph_context = self.graph_rag.retrieve_graph_context(query)
             graph_sources = self.graph_rag.retrieve_graph_chunks(
                 query,
@@ -1054,6 +1137,11 @@ class VerilumeRAG:
         else:
             _emit_stage(on_stage, "Searching local evidence...")
             local_sources = self._search_local_sources(query, identity_tokens, local_file_search_question)
+        if is_short_entity_query(query):
+            original_count = len(local_sources)
+            local_sources = _filter_local_sources_for_short_entity(query, local_sources)
+            if len(local_sources) != original_count:
+                diagnostics["short_entity_local_filtered"] = original_count - len(local_sources)
         if graph_sources:
             local_sources = _merge_local_sources(
                 graph_sources,
@@ -1061,6 +1149,11 @@ class VerilumeRAG:
                 limit=max(self.settings.retriever_k * 2, len(graph_sources)),
             )
             diagnostics["graph_sources_merged"] = True
+            if is_short_entity_query(query):
+                original_count = len(local_sources)
+                local_sources = _filter_local_sources_for_short_entity(query, local_sources)
+                if len(local_sources) != original_count:
+                    diagnostics["short_entity_graph_filtered"] = original_count - len(local_sources)
         self._index_local_sources_in_graph(local_sources)
         _check_generation_stop(should_stop)
         if local_corpus_overview_question:
@@ -1094,11 +1187,13 @@ class VerilumeRAG:
         diagnostics["local_identity_fact_supported"] = local_identity_fact_supported
         _emit_stage(on_stage, f"✓ Local retrieval ({len(local_sources)} matches)")
 
-        if _is_local_inventory_question(original_question) or _is_local_inventory_question(question):
+        if allow_local_search and (
+            _is_local_inventory_question(original_question) or _is_local_inventory_question(question)
+        ):
             response = self._answer_local_inventory_question(question, diagnostics)
             return _attach_conversation_state(response, conversation.state, original_question, question)
 
-        if explicit_local_file_question and (
+        if allow_local_search and explicit_local_file_question and (
             not local_sources
             or _should_answer_local_file_question_directly(query)
             or _is_local_summary_request(query)
@@ -1107,7 +1202,7 @@ class VerilumeRAG:
             response = self._answer_local_file_question(query, local_sources, diagnostics, on_stage)
             return _attach_conversation_state(response, conversation.state, original_question, question)
 
-        if local_file_answer_question and local_sources and local_file_fact_question:
+        if allow_local_search and local_file_answer_question and local_sources and local_file_fact_question:
             _emit_stage(on_stage, "Answering from local file evidence...")
             ranked_evidence, _ = _add_evidence_diagnostics(
                 diagnostics,
@@ -1236,10 +1331,6 @@ class VerilumeRAG:
         model_answer = MODEL_UNKNOWN
         model_sufficient = False
         model_answer_relevant = False
-        current_web_validation = _requires_current_source_verification(
-            question,
-            query_understanding,
-        )
         diagnostics["current_web_validation"] = current_web_validation
         prefer_local_answer = bool(local_sufficient and not current_or_web and not force_web)
         diagnostics["prefer_local_answer"] = prefer_local_answer
@@ -1314,6 +1405,11 @@ class VerilumeRAG:
                     web_sources = web_future.result()
                     if identity_tokens:
                         web_sources = _filter_web_sources_for_identity(web_sources, identity_tokens)
+                    if is_short_entity_query(query):
+                        original_count = len(web_sources)
+                        web_sources = _filter_web_sources_for_short_entity(query, web_sources)
+                        if len(web_sources) != original_count:
+                            diagnostics["short_entity_web_filtered"] = original_count - len(web_sources)
                     web_sources = self._rerank_web(_web_rerank_query(query, web_queries), web_sources)
                     diagnostics["web_count"] = len(web_sources)
                     _emit_stage(on_stage, f"✓ Web evidence ({len(web_sources)} sources)")
@@ -1378,6 +1474,11 @@ class VerilumeRAG:
                     )
                     if identity_tokens:
                         web_sources = _filter_web_sources_for_identity(web_sources, identity_tokens)
+                    if is_short_entity_query(query):
+                        original_count = len(web_sources)
+                        web_sources = _filter_web_sources_for_short_entity(query, web_sources)
+                        if len(web_sources) != original_count:
+                            diagnostics["short_entity_web_filtered"] = original_count - len(web_sources)
                     web_sources = self._rerank_web(_web_rerank_query(query, web_queries), web_sources)
                     diagnostics["web_count"] = len(web_sources)
                     _emit_stage(on_stage, f"✓ Web evidence ({len(web_sources)} sources)")
@@ -1390,6 +1491,32 @@ class VerilumeRAG:
                     )
         diagnostics["model_answer_relevant"] = model_answer_relevant
         diagnostics["model_sufficient"] = model_sufficient
+        if (
+            is_short_entity_query(query)
+            and not local_sources
+            and not web_sources
+            and search_policy.mode != SearchMode.AI_ONLY
+        ):
+            model_sufficient = False
+            model_answer_relevant = False
+            model_answer = MODEL_UNKNOWN
+            diagnostics["short_entity_no_reliable_source"] = True
+            diagnostics["model_sufficient"] = False
+            diagnostics["model_answer_relevant"] = False
+            diagnostics["used_local"] = False
+            diagnostics["used_model_knowledge"] = False
+            diagnostics["used_web"] = False
+            diagnostics["sources_used"] = []
+            diagnostics["evidence_winner"] = "none"
+            response = RAGResponse(
+                "I found no reliable source matching that exact entity/name.",
+                [],
+                [],
+                False,
+                "low",
+                diagnostics,
+            )
+            return _attach_conversation_state(response, conversation.state, original_question, question)
 
         _check_generation_stop(should_stop)
         _emit_stage(on_stage, "Extracting and ranking evidence...")
@@ -3768,6 +3895,40 @@ def _benchmark_mode_label(mode: str) -> str:
     }.get(mode, mode.replace("_", " ").title())
 
 
+def _search_policy_diagnostics(policy: SearchPolicy) -> dict[str, object]:
+    return {
+        "mode": policy.mode.value,
+        "use_local": policy.use_local,
+        "use_ai": policy.use_ai,
+        "use_web": policy.use_web,
+        "ai_as_evidence": policy.ai_as_evidence,
+        "benchmark_allowed": policy.benchmark_allowed,
+        "reason": policy.reason,
+    }
+
+
+def _filter_local_sources_for_short_entity(
+    query: str,
+    local_sources: Sequence[LocalSource],
+) -> list[LocalSource]:
+    return [
+        source
+        for source in local_sources
+        if source_matches_entity(query, f"{source.document} {source.text}")
+    ]
+
+
+def _filter_web_sources_for_short_entity(
+    query: str,
+    web_sources: Sequence[WebSource],
+) -> list[WebSource]:
+    return [
+        source
+        for source in web_sources
+        if source_matches_entity(query, f"{source.title} {source.url} {source.content}")
+    ]
+
+
 def _best_local_score(local_sources: Sequence[LocalSource]) -> float:
     scores = [float(getattr(source, "score", 0.0) or 0.0) for source in local_sources]
     return max(scores) if scores else 0.0
@@ -3803,6 +3964,11 @@ def _add_evidence_diagnostics(
     diagnostics["used_local"] = used_local
     diagnostics["used_model_knowledge"] = used_model
     diagnostics["used_web"] = used_web
+    diagnostics["sources_used"] = _diagnostic_sources_used(
+        used_local=used_local,
+        used_model=used_model,
+        used_web=used_web,
+    )
     diagnostics["model_knowledge_available"] = _model_answer_available(model_answer)
     diagnostics["web_enabled"] = bool(getattr(settings, "enable_web_search", False)) if settings is not None else False
     diagnostics["evidence_streams"] = [
@@ -3866,6 +4032,18 @@ def _diagnostic_evidence_winner(winner, *, used_local: bool, used_model: bool, u
     return value
 
 
+def _diagnostic_sources_used(*, used_local: bool, used_model: bool, used_web: bool) -> list[str]:
+    return [
+        source
+        for source, enabled in (
+            ("local", used_local),
+            ("ai", used_model),
+            ("web", used_web),
+        )
+        if enabled
+    ]
+
+
 def _finalize_evidence_diagnostics(
     diagnostics,
     *,
@@ -3887,6 +4065,11 @@ def _finalize_evidence_diagnostics(
     diagnostics["used_local"] = used_local
     diagnostics["used_model_knowledge"] = used_model
     diagnostics["used_web"] = used_web
+    diagnostics["sources_used"] = _diagnostic_sources_used(
+        used_local=used_local,
+        used_model=used_model,
+        used_web=used_web,
+    )
     diagnostics["evidence_streams"] = [
         stream
         for stream, enabled in (

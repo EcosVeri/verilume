@@ -193,6 +193,9 @@ class BaseGenerator(ABC):
             "Cite local sources as [S1], [S2]. "
             "Cite web sources as [W1], [W2]. "
             "Do not invent citations. "
+            "When using equations from local files, repair only obvious OCR/PDF extraction errors in mathematical notation. "
+            "Use β₀, β₁, β₂, β₃, and ε for regression equations when clearly supported. "
+            "Do not invent variables. If an equation is incomplete and cannot be safely repaired, say it appears incomplete. "
             "If sources disagree, mention the conflict and prefer the newest high-authority evidence. "
             f"Style: {self.style_instruction}"
         )

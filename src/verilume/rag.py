@@ -32,6 +32,7 @@ from verilume.core.agents import (
     requested_news_sources,
     update_state_from_answer,
 )
+from verilume.core.agentic_planner import AgenticPlanner
 from verilume.core.citation_verifier import CitationVerificationAgent
 from verilume.core.conversation_state import ConversationState
 from verilume.core.embeddings import EmbeddingService
@@ -518,6 +519,7 @@ class VerilumeRAG:
         self.query_interpretation_agent = QueryInterpretationAgent(self.generator)
         self.query_understanding_agent = QueryUnderstandingAgent()
         self.search_planner = SearchPlanner()
+        self.agentic_planner = AgenticPlanner()
         self.citation_verifier = CitationVerificationAgent()
         self.semantic_cache = (
             SemanticCache(settings.semantic_cache_path)
@@ -753,6 +755,7 @@ class VerilumeRAG:
         if explicit_local_file_question:
             query_understanding.fact_type = FactType.LOCAL_DOCUMENT
             query_understanding.evidence_policy = EvidencePolicy.LOCAL_ONLY
+        action_plan = self.agentic_planner.plan(question, interpretation, self.settings)
         identity_tokens = _identity_tokens(question)
 
         query = question
@@ -794,6 +797,11 @@ class VerilumeRAG:
                 query_types=[item.value for item in query_understanding.types],
                 fact_type=query_understanding.fact_type.value,
                 evidence_policy=query_understanding.evidence_policy.value,
+                action_plan=action_plan.actions,
+                planner_reason=action_plan.reason,
+                question_type=action_plan.question_type,
+                policy=action_plan.policy,
+                agentic_plan=action_plan.diagnostics(),
                 search_mode=self.settings.search_mode,
                 local_file_question=query_understanding.local_file_question,
                 identity_attribute_question=identity_attribute_local_fact_question,

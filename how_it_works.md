@@ -22,6 +22,7 @@ The main files and their jobs are:
 | `src/verilume/cli.py` | CLI entrypoint. Supports `run`, `ingest`, `stats`, `config`, and `doctor`. |
 | `src/verilume/settings.py` | Loads environment variables and local user settings from `~/.verilume/config.env`. |
 | `src/verilume/ingest.py` | Parses files, normalizes content, chunks text, embeds it, and builds the local Chroma knowledge base. |
+| `src/verilume/core/agentic_planner.py` | Produces explicit pipeline actions such as local search, model answer, web search, document summarization, table extraction, and calculation. |
 | `src/verilume/core/claim_extraction.py` | Extracts atomic factual claims from final answers for evidence comparison. |
 | `src/verilume/core/evidence_comparison.py` | Compares each claim against local, web, and AI evidence streams. |
 | `src/verilume/core/retrieval.py` | Chroma retriever with dense, lexical, and hybrid retrieval. |
@@ -129,7 +130,36 @@ For normal questions, the query interpreter resolves:
 
 This stage also carries forward conversation state such as the active person, country, role, or research topic.
 
-### 5.3 Local retrieval first
+### 5.3 Agentic action planning
+
+After query interpretation, Verilume now builds an explicit action plan. This does not replace evidence arbitration; it makes the intended retrieval/tool sequence visible and future-ready.
+
+Supported actions are:
+
+| Action | Meaning |
+| --- | --- |
+| `search_local` | Search the local Chroma knowledge base. |
+| `answer_model` | Ask the configured model for stable explanatory support. |
+| `search_web` | Search the configured web provider for external evidence. |
+| `summarize_documents` | Build a local-document summary answer. |
+| `extract_table` | Locate relevant table data. |
+| `calculate` | Compute a numerical result from table data. |
+| `build_graph_context` | Reserved for knowledge graph and GraphRAG context. |
+| `retrieve_multimodal` | Reserved for image/page-level multimodal retrieval. |
+
+Planner examples:
+
+| Question type | Example actions |
+| --- | --- |
+| Stable explanation | `search_local`, `answer_model`, and `search_web` when web is enabled. |
+| Current or dynamic fact | `search_local`, `search_web`; model knowledge is excluded as factual evidence. |
+| Local document summary | `search_local`, `summarize_documents`. |
+| Table calculation | `search_local`, `extract_table`, `calculate`. |
+| Explicit web request | `search_local`, `search_web`, and `answer_model` for stable support. |
+
+The planner writes `action_plan`, `planner_reason`, `question_type`, `policy`, and `agentic_plan` into response diagnostics. The existing mature routing still executes the current local/model/web pipeline, while later Version 2 features can attach concrete tools to these actions.
+
+### 5.4 Local retrieval first
 
 For real knowledge questions, Verilume searches the local knowledge base first.
 
@@ -141,7 +171,7 @@ Local retrieval uses one of three modes:
 
 Some question types force lexical retrieval, especially identity lookups and local-file questions, because exact names and filenames matter more than semantic similarity.
 
-### 5.4 AI knowledge usage
+### 5.5 AI knowledge usage
 
 AI knowledge is now part of the normal answer path instead of a last-resort add-on.
 
@@ -155,7 +185,7 @@ The current behavior is:
 
 For model-only answers, the app labels the result as AI knowledge and marks it as not externally verified.
 
-### 5.5 Web search usage
+### 5.6 Web search usage
 
 Web search is used when:
 
@@ -168,7 +198,7 @@ For stable/static questions, web search is paired with AI knowledge rather than 
 
 Web search is not supposed to override strong, stable local evidence unnecessarily. It supplements or validates when appropriate, and local evidence keeps the highest weight when the question is about uploaded documents.
 
-### 5.6 Local-file exceptions
+### 5.7 Local-file exceptions
 
 Local-file existence and direct local-document questions are treated specially.
 
@@ -185,7 +215,7 @@ These are answered strictly from local indexed files. AI knowledge and web searc
 
 If the user names a specific local filename such as `slides-smoke.pptx` or `scanned-smoke.pdf`, that filename is now preserved as an anchor during local ranking and filtering. This matters for short OCR chunks, where the document name may be the strongest signal.
 
-### 5.7 Search modes
+### 5.8 Search modes
 
 The sidebar now exposes a `Search mode` control for users who want more control than Auto routing.
 
@@ -202,7 +232,7 @@ The modes are:
 
 Auto remains the default because it preserves the local-first safety model. The explicit modes are user controls; they should not be used by the classifier as hidden defaults.
 
-### 5.8 Semantic answer cache
+### 5.9 Semantic answer cache
 
 Verilume now has two answer caches:
 

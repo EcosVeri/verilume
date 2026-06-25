@@ -29,6 +29,9 @@ The main files and their jobs are:
 | `src/verilume/core/query_interpreter.py` | Interprets user intent, follow-up context, source policy, and search preferences. |
 | `src/verilume/core/search_planner.py` | Produces a search plan describing whether local, model knowledge, or web evidence should be used. |
 | `src/verilume/core/semantic_cache.py` | Persistent semantic answer cache keyed by question meaning, evidence policy, document fingerprint, web settings, backend, and model. |
+| `src/verilume/core/table_store.py` | SQLite-backed table metadata store with local CSV snapshots. |
+| `src/verilume/core/table_retrieval.py` | Finds the best local table for numerical questions. |
+| `src/verilume/core/table_agent.py` | Performs safe pandas calculations and returns calculation-grounded answers. |
 | `src/verilume/rag.py` | Main orchestration layer. It runs local retrieval, AI knowledge generation, web search, reranking, answer selection, citation verification, and final answer validation. |
 | `src/verilume/ui/sidebar.py` | Settings, upload controls, remove-document controls, and stats cards. |
 | `src/verilume/ui/chat.py` | Chat rendering, source blocks, evidence panels, and exports. |
@@ -41,6 +44,7 @@ By default, user data is stored in the local user directory:
 - `~/.verilume/chroma_db` stores the Chroma vector database.
 - `~/.verilume/ingestion_manifest.json` stores file hashes and ingestion metadata.
 - `~/.verilume/semantic_cache.json` stores reusable evidence-ranked answers.
+- `~/.verilume/tables` stores table metadata and local CSV snapshots for calculation questions.
 - `~/.verilume/config.env` stores local app settings such as tokens and model choices.
 
 This keeps user content outside the repository and makes the app usable as a desktop tool without polluting the project tree.
@@ -261,6 +265,21 @@ Cache freshness follows the same evidence philosophy:
 | Local-document questions | Stay valid until the document fingerprint changes. |
 
 The semantic cache stores the final reconciled answer, local citations, web citations, model-answer support text, diagnostics, and evidence scores. On a hit, the RAG layer returns the cached evidence-ranked answer instead of running retrieval and generation again. On a miss or stale entry, Verilume runs the full local/model/web pipeline.
+
+### 5.10 Table-aware retrieval and calculation
+
+For numerical questions over local tabular files, the planner emits `extract_table` and `calculate`. The current Version 2 slice supports CSV and TSV files in the local documents directory.
+
+The table path works like this:
+
+1. Verilume scans `DOCS_DIR` for `.csv` and `.tsv` files.
+2. Each table is saved into `TABLE_STORE_DIR/frames` as a clean CSV snapshot.
+3. Metadata is stored in `TABLE_STORE_DIR/tables.sqlite3`, including table ID, document, columns, row count, column types, summary, source path, and file signature.
+4. A table retriever matches the question against document names, summaries, and column names.
+5. The table agent chooses a numeric column and performs a pandas calculation such as `mean`, `sum`, `min`, `max`, `median`, or `count`.
+6. The answer includes the calculation performed, the column used, the numeric result, and a local `[S#]` citation.
+
+The safety rule is strict: if no matching local table or numeric column is found, Verilume does not invent a number. It falls back to the normal evidence pipeline instead.
 
 ## 6. How Verilume Decides on the Final Answer
 

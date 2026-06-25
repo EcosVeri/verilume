@@ -32,7 +32,7 @@ from verilume.core.agents import (
     requested_news_sources,
     update_state_from_answer,
 )
-from verilume.core.agentic_planner import AgenticPlanner
+from verilume.core.agentic_planner import CALCULATE, EXTRACT_TABLE, AgenticPlanner
 from verilume.core.citation_verifier import CitationVerificationAgent
 from verilume.core.conversation_state import ConversationState
 from verilume.core.embeddings import EmbeddingService
@@ -71,6 +71,9 @@ from verilume.core.semantic_cache import (
     document_fingerprint,
     semantic_cache_ttl_seconds,
 )
+from verilume.core.table_agent import TableAgent
+from verilume.core.table_retrieval import TableRetrieval
+from verilume.core.table_store import TableStore
 from verilume.core.web_search import (
     DuckDuckGoSearch,
     boost_priority_sources,
@@ -520,6 +523,9 @@ class VerilumeRAG:
         self.query_understanding_agent = QueryUnderstandingAgent()
         self.search_planner = SearchPlanner()
         self.agentic_planner = AgenticPlanner()
+        self.table_store = TableStore(settings.table_store_dir)
+        self.table_retrieval = TableRetrieval(self.table_store)
+        self.table_agent = TableAgent()
         self.citation_verifier = CitationVerificationAgent()
         self.semantic_cache = (
             SemanticCache(settings.semantic_cache_path)
@@ -604,6 +610,84 @@ class VerilumeRAG:
             generation_backend=str(getattr(self.settings, "generation_backend", "")),
             model_name=str(self.settings.active_generation_model()),
             web_provider=str(getattr(self.settings, "web_search_provider", "")),
+        )
+
+    def _answer_table_question_if_possible(
+        self,
+        question: str,
+        diagnostics: dict,
+        on_stage: Callable[[str], None] | None = None,
+    ) -> RAGResponse | None:
+        actions = set(diagnostics.get("action_plan") or [])
+        if not {EXTRACT_TABLE, CALCULATE}.issubset(actions):
+            return None
+
+        try:
+            _emit_stage(on_stage, "Indexing local tables...")
+            self.table_store.index_local_tables(self.settings.docs_dir)
+            metadata = self.table_retrieval.find_best_table(question)
+            if metadata is None:
+                diagnostics["table_note"] = "No matching local table was found."
+                return None
+            df = self.table_store.load_table(metadata.table_id)
+            table_answer = self.table_agent.answer_with_pandas(
+                question,
+                df,
+                metadata=metadata,
+                citation_label="S1",
+            )
+        except Exception as exc:
+            diagnostics["table_error"] = _clean_error_message(exc)
+            return None
+
+        source = LocalSource(
+            label="S1",
+            document=metadata.document,
+            page=metadata.page,
+            chunk_id=f"table:{metadata.table_id}",
+            text=(
+                f"{metadata.summary}\n"
+                f"Calculation: {table_answer.calculation}\n"
+                f"Result: {table_answer.result}"
+            ),
+            score=1.0,
+            metadata={
+                "table_id": metadata.table_id,
+                "source_type": "table",
+                "columns": metadata.columns,
+                "calculation": table_answer.calculation,
+            },
+        )
+        diagnostics.update(
+            table_answer=True,
+            table_id=metadata.table_id,
+            table_document=metadata.document,
+            table_calculation=table_answer.calculation,
+            table_columns_used=table_answer.columns_used,
+            used_local=True,
+            used_model_knowledge=False,
+            used_web=False,
+            evidence_winner="local",
+            evidence_streams=["local"],
+            claim_comparisons=claim_comparisons_to_dicts(
+                compare_answer_to_evidence(
+                    table_answer.answer,
+                    local_sources=[source],
+                    web_sources=[],
+                    model_answer=None,
+                    fact_type=diagnostics.get("fact_type"),
+                    policy=EvidencePolicy.LOCAL_ONLY.value,
+                )
+            ),
+        )
+        _emit_stage(on_stage, "✓ Table calculation ready")
+        return RAGResponse(
+            answer=table_answer.answer,
+            local_sources=[source],
+            web_sources=[],
+            used_web=False,
+            confidence="local-grounded",
+            diagnostics=diagnostics,
         )
 
     def _ask_uncached(
@@ -814,6 +898,19 @@ class VerilumeRAG:
             )
             .build()
         )
+        table_response = self._answer_table_question_if_possible(query, diagnostics, on_stage)
+        if table_response is not None:
+            updated_state = update_state_from_answer(
+                conversation.state,
+                question=original_question,
+                resolved_query=question,
+                answer=table_response.answer,
+            )
+            table_response.diagnostics["conversation_roles"] = updated_state.roles
+            table_response.diagnostics["roles"] = updated_state.roles
+            table_response.diagnostics["conversation_country"] = updated_state.active_country
+            table_response.diagnostics["conversation_person"] = updated_state.active_person
+            return _attach_conversation_state(table_response, updated_state, original_question, question)
 
         force_web = self._is_web_requested(question)
         search_mode = _search_mode_key(self.settings)

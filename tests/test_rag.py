@@ -2394,6 +2394,7 @@ class RAGRoutingTests(unittest.TestCase):
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
             model_answer=MODEL_UNKNOWN,
+            web_answer="Alex Jordan has a university profile [W1].",
             local_sources=[local_profile],
             web_sources=[
                 WebSource(
@@ -2407,10 +2408,12 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Jordan Alex")
 
-        self.assertFalse(result.used_web)
+        self.assertTrue(result.used_web)
         self.assertEqual([source.label for source in result.local_sources], ["S1"])
+        self.assertEqual([source.label for source in result.web_sources], ["W1"])
         self.assertIn("Alex Jordan", result.answer)
         self.assertIn("[S1]", result.answer)
+        self.assertIn("[W1]", result.answer)
         self.assertEqual(len(rag.generator.model_calls), 1)
         self.assertEqual(result.diagnostics["answer_verification_status"], "verified")
 
@@ -2649,10 +2652,11 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Christophe Ley")
 
-        self.assertEqual(result.confidence, "local-grounded")
-        self.assertFalse(result.used_web)
+        self.assertEqual(result.confidence, "local-web-assisted")
+        self.assertTrue(result.used_web)
         self.assertEqual([source.label for source in result.local_sources], ["S1"])
-        self.assertEqual(result.web_sources, [])
+        self.assertEqual([source.label for source in result.web_sources], ["W1"])
+        self.assertEqual(result.diagnostics["web_reason"], "local_weighted_hybrid")
 
     def test_current_question_uses_current_information_label_from_web_evidence(self) -> None:
         rag = self._make_rag(

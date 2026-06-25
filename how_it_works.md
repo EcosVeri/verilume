@@ -160,7 +160,7 @@ Web search is used when:
 3. The question is current, time-sensitive, or otherwise likely to change.
 4. Local evidence and AI knowledge are both insufficient and web search is enabled.
 
-For stable/static questions, web search is paired with AI knowledge rather than replacing it. For current or changeable questions, web evidence becomes the source of truth and AI knowledge is not used as final evidence.
+For stable/static questions, web search is paired with AI knowledge rather than replacing it. This also applies when local evidence already gives a usable answer: the web stream joins the evidence pool when enabled, while local evidence remains weighted more heavily for document-specific facts and conflict resolution. For current or changeable questions, web evidence becomes the source of truth and AI knowledge is not used as final evidence.
 
 Web search is not supposed to override strong, stable local evidence unnecessarily. It supplements or validates when appropriate, and local evidence keeps the highest weight when the question is about uploaded documents.
 

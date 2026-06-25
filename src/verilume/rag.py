@@ -964,7 +964,6 @@ class VerilumeRAG:
             and allow_web_search
             and not current_web_validation
             and not local_file_answer_question
-            and not local_sufficient
         )
         should_use_web = (
             _should_use_web(
@@ -978,10 +977,10 @@ class VerilumeRAG:
         )
         if search_mode in {"local_only", "local_ai"}:
             should_use_web = False
-        if standard_static_web and not (force_web or planned_web):
-            diagnostics["web_reason"] = "standard_static_hybrid"
-        elif prefer_local_answer and should_use_web:
+        if prefer_local_answer and should_use_web:
             diagnostics["web_reason"] = "local_weighted_hybrid"
+        elif standard_static_web and not (force_web or planned_web):
+            diagnostics["web_reason"] = "standard_static_hybrid"
         diagnostics["web_requested"] = should_use_web
         diagnostics["web_provider"] = self.settings.web_search_provider_label()
 
@@ -1151,6 +1150,13 @@ class VerilumeRAG:
             diagnostics["evidence_conflict"] = evidence_conflict
 
         answer = _verify_citations(answer, local_sources, web_sources)
+        if (
+            local_sufficient
+            and local_sources
+            and not _labels_in_answer(answer, "S")
+            and not current_web_validation
+        ):
+            answer = _ensure_local_citation(answer, local_sources)
         citation_verification = self.citation_verifier.verify(
             answer,
             question=question,

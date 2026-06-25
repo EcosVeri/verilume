@@ -132,6 +132,45 @@ class LocalFirstWorkflowTests(unittest.TestCase):
         self.assertEqual(result.diagnostics.get("evidence_winner"), "hybrid")
         self.assertIn("Econometrics", result.answer)
 
+    def test_stable_question_keeps_local_evidence_but_still_checks_web_when_enabled(self) -> None:
+        local_source = LocalSource(
+            label="S1",
+            document="econometrics_note.pdf",
+            page=1,
+            chunk_id="econometrics-note",
+            text="Econometrics applies statistical methods to economic data.",
+            score=0.95,
+        )
+        rag = self._make_rag(
+            local_answer="Econometrics applies statistical methods to economic data [S1].",
+            model_answer="Econometrics applies statistical methods to economic data.",
+            web_answer=(
+                "Econometrics applies statistical methods to economic data, "
+                "with local evidence and web validation [S1] [W1]."
+            ),
+            local_sources=[local_source],
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="Econometrics overview",
+                    url="https://example.edu/econometrics",
+                    content="Econometrics combines statistics and economics.",
+                )
+            ],
+        )
+
+        result = rag.ask("What is econometrics?")
+
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertEqual(len(rag.generator.model_calls), 1)
+        self.assertTrue(result.used_web)
+        self.assertEqual(result.diagnostics["web_reason"], "local_weighted_hybrid")
+        self.assertTrue(result.diagnostics["used_local"])
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertTrue(result.diagnostics["used_web"])
+        self.assertEqual(result.diagnostics["evidence_winner"], "hybrid")
+        self.assertIn("Econometrics", result.answer)
+
     def test_explicit_web_request_uses_web_after_local_and_model(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,

@@ -87,6 +87,7 @@ class LocalFirstWorkflowTests(unittest.TestCase):
                 hf_token="token",
                 tavily_api_key="key",
                 enable_web_search=web_enabled,
+                semantic_cache_enabled=False,
             )
         )
         rag.retriever = FakeRetriever([LOCAL_SOURCE] if local_sources is None else local_sources)

@@ -1514,6 +1514,49 @@ div[data-baseweb="menu"] li:hover {
   margin-top: .48rem;
 }
 
+.veri-specialized-panel {
+  animation: veri-fade-up .24s ease both;
+  border: 1px solid rgba(54, 209, 196, .22);
+  border-radius: 8px;
+  background: rgba(54, 209, 196, .035);
+  margin: .9rem 0 .85rem 0;
+  padding: .78rem .85rem;
+}
+
+.veri-specialized-title {
+  color: var(--veri-amber);
+  font-size: .76rem;
+  font-weight: 840;
+  letter-spacing: .08rem;
+  margin-bottom: .62rem;
+  text-transform: uppercase;
+}
+
+.veri-specialized-card {
+  border: 1px solid var(--veri-line);
+  border-radius: 8px;
+  background: var(--veri-panel);
+  padding: .78rem .85rem;
+}
+
+.veri-specialized-body {
+  display: grid;
+  gap: .38rem;
+  margin-top: .52rem;
+}
+
+.veri-specialized-body p {
+  color: var(--veri-muted);
+  font-size: .82rem;
+  line-height: 1.4;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.veri-specialized-body strong {
+  color: var(--veri-text);
+}
+
 .veri-source-title {
   color: var(--veri-amber);
   font-weight: 720;

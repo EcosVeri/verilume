@@ -334,6 +334,7 @@ def _render_sources_expanded(response: RAGResponse, settings: AppSettings) -> No
     _render_evidence_details(response)
     _render_benchmark_report(response)
     _render_evidence_comparison(response)
+    _render_specialized_evidence_panels(response)
     if settings.show_local_sources and response.local_sources:
         st.markdown(
             f'<div class="veri-source-section veri-source-section-local">{LOCAL_SOURCES_HEADER}</div>',
@@ -349,6 +350,7 @@ def _render_sources_inline(response: RAGResponse, settings: AppSettings) -> None
     _render_evidence_details_inline(response)
     _render_benchmark_report_inline(response)
     _render_evidence_comparison_inline(response)
+    _render_specialized_evidence_panels(response)
     if settings.show_local_sources and response.local_sources:
         with st.container():
             st.markdown(
@@ -696,6 +698,91 @@ def _friendly_token(value: str) -> str:
     if not text:
         return ""
     return text.replace("_", " ").title() if re.fullmatch(r"[a-z_]+", text) else text
+
+
+def _render_specialized_evidence_panels(response: RAGResponse) -> None:
+    specialized = [
+        source
+        for source in response.local_sources
+        if (source.metadata or {}).get("content_type") in {"formula", "structured_field", "ocr_block"}
+    ]
+    if not specialized:
+        return
+    grouped: dict[str, list[Any]] = {}
+    for source in specialized:
+        grouped.setdefault(str((source.metadata or {}).get("content_type")), []).append(source)
+    labels = {
+        "formula": "Formula Evidence",
+        "structured_field": "Structured OCR Evidence",
+        "ocr_block": "OCR Evidence",
+    }
+    for content_type, sources in grouped.items():
+        rendered = "".join(_specialized_evidence_card(source) for source in sources)
+        st.markdown(
+            f"""
+<div class="veri-specialized-panel">
+  <div class="veri-specialized-title">{escape(labels.get(content_type, "Specialized Evidence"))}</div>
+  <div class="veri-source-card-grid">{rendered}</div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def _specialized_evidence_card(source: Any) -> str:
+    metadata = source.metadata or {}
+    content_type = metadata.get("content_type")
+    page = f"Page {source.page}" if source.page else "Page not available"
+    if content_type == "formula":
+        title = metadata.get("formula_type") or "formula"
+        rows = (
+            ("Document", source.document),
+            ("Page", page),
+            ("Formula", metadata.get("repaired_formula") or metadata.get("raw_formula") or source.text),
+            ("Variables", _format_diagnostic_value(metadata.get("formula_variables"))),
+            ("Surrounding text", metadata.get("surrounding_text")),
+            ("Confidence", metadata.get("formula_confidence")),
+        )
+    elif content_type == "structured_field":
+        title = metadata.get("canonical_name") or "structured field"
+        rows = (
+            ("Document", source.document),
+            ("Page", page),
+            ("Document type", metadata.get("document_type")),
+            ("Field", metadata.get("canonical_name")),
+            ("Value", _source_value_line(source.text)),
+            ("Raw label", metadata.get("raw_label") or "detected pattern"),
+            ("Confidence", metadata.get("structured_confidence")),
+        )
+    else:
+        title = "OCR block"
+        rows = (
+            ("Document", source.document),
+            ("Page", page),
+            ("Text block", source.text),
+            ("Confidence", metadata.get("ocr_confidence")),
+        )
+    rendered_rows = "".join(
+        f"<p><strong>{escape(label)}:</strong> {escape(_format_diagnostic_value(value))}</p>"
+        for label, value in rows
+        if _format_diagnostic_value(value)
+    )
+    return f"""
+<div class="veri-specialized-card">
+  <div class="veri-source-card-top">
+    <div class="veri-source-card-title"><span>✦</span>{escape(_friendly_token(str(title)))}</div>
+    <div class="veri-source-card-badge">{escape(source.label)}</div>
+  </div>
+  <div class="veri-specialized-body">{rendered_rows}</div>
+</div>
+    """
+
+
+def _source_value_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.lower().startswith("value:"):
+            return line.split(":", maxsplit=1)[1].strip()
+    return text or ""
 
 
 def _render_local_sources_table(response: RAGResponse) -> None:

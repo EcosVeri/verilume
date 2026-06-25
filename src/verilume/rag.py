@@ -33,7 +33,14 @@ from verilume.core.agents import (
     requested_news_sources,
     update_state_from_answer,
 )
-from verilume.core.agentic_planner import CALCULATE, EXTRACT_TABLE, AgenticPlanner
+from verilume.core.agentic_planner import (
+    CALCULATE,
+    EXTRACT_TABLE,
+    RETRIEVE_FORMULA,
+    RETRIEVE_OCR,
+    RETRIEVE_STRUCTURED,
+    AgenticPlanner,
+)
 from verilume.core.benchmark import (
     AI_ONLY,
     FULL,
@@ -69,8 +76,12 @@ from verilume.core.generation import (
     create_generator,
     is_model_selection_warning,
 )
+from verilume.core.formula_retrieval import FormulaRetriever
+from verilume.core.formula_store import FormulaStore
 from verilume.core.graphrag import GraphRAGRetriever
 from verilume.core.knowledge_graph import KnowledgeGraph
+from verilume.core.ocr_blocks import OCRBlockStore
+from verilume.core.ocr_retrieval import OCRRetriever
 from verilume.core.query_preprocessing import normalize_query, query_variants
 from verilume.core.query_interpreter import (
     QueryInterpretationAgent,
@@ -90,6 +101,8 @@ from verilume.core.semantic_cache import (
 from verilume.core.table_agent import TableAgent
 from verilume.core.table_retrieval import TableRetrieval
 from verilume.core.table_store import TableStore
+from verilume.core.structured_document_store import StructuredDocumentStore
+from verilume.core.structured_retrieval import StructuredRetriever
 from verilume.core.web_search import (
     DuckDuckGoSearch,
     boost_priority_sources,
@@ -544,6 +557,12 @@ class VerilumeRAG:
         self.table_store = TableStore(settings.table_store_dir)
         self.table_retrieval = TableRetrieval(self.table_store)
         self.table_agent = TableAgent()
+        self.formula_store = FormulaStore(settings.formula_store_path)
+        self.formula_retriever = FormulaRetriever(self.formula_store)
+        self.ocr_block_store = OCRBlockStore(settings.ocr_block_store_path)
+        self.ocr_retriever = OCRRetriever(self.ocr_block_store)
+        self.structured_store = StructuredDocumentStore(settings.structured_document_store_path)
+        self.structured_retriever = StructuredRetriever(self.structured_store)
         self.knowledge_graph = KnowledgeGraph(settings.knowledge_graph_path)
         self.graph_rag = GraphRAGRetriever(self.knowledge_graph)
         self._graphrag_enabled = bool(getattr(settings, "enable_graphrag", True))
@@ -1138,6 +1157,19 @@ class VerilumeRAG:
         else:
             _emit_stage(on_stage, "Searching local evidence...")
             local_sources = self._search_local_sources(query, identity_tokens, local_file_search_question)
+            specialized_sources = self._specialized_local_sources(
+                query,
+                action_plan.actions,
+                diagnostics,
+            )
+            if specialized_sources:
+                local_sources = _merge_local_sources(
+                    specialized_sources,
+                    local_sources,
+                    limit=max(self.settings.retriever_k * 3, len(specialized_sources)),
+                )
+        if skip_local_retrieval:
+            specialized_sources = []
         if is_short_entity_query(query):
             original_count = len(local_sources)
             local_sources = _filter_local_sources_for_short_entity(query, local_sources)
@@ -1187,6 +1219,27 @@ class VerilumeRAG:
         diagnostics["local_file_question"] = local_file_answer_question
         diagnostics["local_identity_fact_supported"] = local_identity_fact_supported
         _emit_stage(on_stage, f"✓ Local retrieval ({len(local_sources)} matches)")
+
+        if allow_local_search and specialized_sources and _specialized_sources_are_decisive(specialized_sources):
+            answer = _specialized_evidence_answer(query, specialized_sources)
+            used_sources = _relabel_local_sources(specialized_sources)
+            _finalize_evidence_diagnostics(
+                diagnostics,
+                answer=answer,
+                used_local_sources=used_sources,
+                used_web_sources=[],
+                model_answer=None,
+                model_sufficient=False,
+            )
+            response = RAGResponse(
+                answer,
+                used_sources,
+                [],
+                False,
+                "local-grounded",
+                diagnostics,
+            )
+            return _attach_conversation_state(response, conversation.state, original_question, question)
 
         if allow_local_search and (
             _is_local_inventory_question(original_question) or _is_local_inventory_question(question)
@@ -1728,6 +1781,46 @@ class VerilumeRAG:
             )
         except Exception:
             return []
+
+    def _specialized_local_sources(
+        self,
+        query: str,
+        actions: Sequence[str],
+        diagnostics: dict,
+    ) -> list[LocalSource]:
+        sources: list[LocalSource] = []
+        type_counts: Counter[str] = Counter()
+        if RETRIEVE_FORMULA in actions:
+            formula_sources = self.formula_retriever.retrieve(
+                query,
+                limit=max(1, self.settings.retriever_k),
+            )
+            sources.extend(formula_sources)
+            type_counts.update("formula" for _source in formula_sources)
+        if RETRIEVE_STRUCTURED in actions:
+            structured_sources = self.structured_retriever.retrieve(
+                query,
+                limit=max(1, self.settings.retriever_k),
+            )
+            sources.extend(structured_sources)
+            type_counts.update("structured_field" for _source in structured_sources)
+        if RETRIEVE_OCR in actions:
+            ocr_sources = self.ocr_retriever.retrieve(
+                query,
+                limit=max(1, self.settings.retriever_k),
+            )
+            sources.extend(ocr_sources)
+            type_counts.update("ocr_block" for _source in ocr_sources)
+        if sources:
+            diagnostics["specialized_evidence_count"] = len(sources)
+            diagnostics["specialized_evidence_types"] = dict(type_counts)
+            diagnostics["local_win_reasons"] = _unique_nonempty(
+                [
+                    *diagnostics.get("local_win_reasons", []),
+                    "specialized local evidence matched query intent",
+                ]
+            )
+        return _relabel_local_sources(sources)
 
     def _document_summary_sources(self, question: str) -> list[LocalSource]:
         if not (_is_local_summary_request(question) or _is_local_corpus_overview_request(question)):
@@ -4447,6 +4540,88 @@ def _local_file_evidence_answer(sources):
     if len(sources) > 5:
         lines.append(f"Additional matching chunks found: {len(sources) - 5}.")
     return "\n".join(lines)
+
+
+def _specialized_sources_are_decisive(sources: Sequence[LocalSource]) -> bool:
+    if not sources:
+        return False
+    return any((source.metadata or {}).get("content_type") in {"formula", "structured_field", "ocr_block"} for source in sources)
+
+
+def _specialized_evidence_answer(question: str, sources: Sequence[LocalSource]) -> str:
+    primary = sources[0]
+    content_type = (primary.metadata or {}).get("content_type")
+    if content_type == "formula":
+        return _formula_evidence_answer(sources)
+    if content_type == "structured_field":
+        return _structured_evidence_answer(question, sources)
+    return _ocr_evidence_answer(sources)
+
+
+def _formula_evidence_answer(sources: Sequence[LocalSource]) -> str:
+    source = sources[0]
+    metadata = source.metadata or {}
+    variables = metadata.get("formula_variables") or {}
+    variable_lines = []
+    if isinstance(variables, dict):
+        variable_lines = [f"- {name}: {meaning}" for name, meaning in variables.items()]
+    page = f"Page: {source.page}" if source.page else "Page: not available"
+    confidence = float(metadata.get("formula_confidence") or source.score or 0.0)
+    lines = [
+        f"Formula: {metadata.get('repaired_formula') or source.text} [{source.label}]",
+        "",
+        f"Interpretation: Formula type is {metadata.get('formula_type') or 'unknown'}.",
+        "Variables:",
+        *(variable_lines or ["- No nearby variable definitions were found."]),
+        "",
+        f"Source document: {source.document}",
+        page,
+        f"Confidence: {'High' if confidence >= 0.75 else 'Medium' if confidence >= 0.55 else 'Low'}",
+    ]
+    if confidence < 0.65:
+        lines.insert(1, "The extracted formula may be incomplete or OCR-damaged.")
+    return "\n".join(lines)
+
+
+def _structured_evidence_answer(question: str, sources: Sequence[LocalSource]) -> str:
+    source = sources[0]
+    metadata = source.metadata or {}
+    field = metadata.get("canonical_name") or metadata.get("field_type") or "field"
+    value = _structured_value_from_source(source)
+    confidence = float(metadata.get("structured_confidence") or source.score or 0.0)
+    page = f"Page: {source.page}" if source.page else "Page: not available"
+    lines = [
+        f"{_friendly_label(str(field))}: {value} [{source.label}]",
+        "",
+        f"Document type: {_friendly_label(str(metadata.get('document_type') or 'unknown'))}",
+        f"Raw label: {metadata.get('raw_label') or 'detected pattern'}",
+        f"Source document: {source.document}",
+        page,
+        f"Confidence: {'High' if confidence >= 0.8 else 'Medium' if confidence >= 0.55 else 'Low'}",
+    ]
+    if len(sources) > 1:
+        lines.extend(["", "Other possible matching fields were found; the highest-confidence match is shown first."])
+    return "\n".join(lines)
+
+
+def _ocr_evidence_answer(sources: Sequence[LocalSource]) -> str:
+    lines = ["OCR Evidence:"]
+    for source in sources[:3]:
+        page = f", page {source.page}" if source.page else ""
+        lines.append(f"- [{source.label}] {source.document}{page}: {_compact_source_text(source.text, limit=260)}")
+    lines.extend(["", "Confidence: Medium"])
+    return "\n".join(lines)
+
+
+def _structured_value_from_source(source: LocalSource) -> str:
+    for line in (source.text or "").splitlines():
+        if line.lower().startswith("value:"):
+            return line.split(":", maxsplit=1)[1].strip()
+    return _compact_source_text(source.text, limit=120)
+
+
+def _friendly_label(value: str) -> str:
+    return (value or "").replace("_", " ").strip().title()
 
 
 def _local_file_confidence(sources):

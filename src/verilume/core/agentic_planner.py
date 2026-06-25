@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from verilume.core.evidence import EvidencePolicy, FactType, classify_question
+from verilume.core.formula_retrieval import is_formula_query
+from verilume.core.ocr_retrieval import is_ocr_query
 from verilume.core.query_interpreter import InterpretedQuery
+from verilume.core.structured_retrieval import is_structured_document_query
 from verilume.settings import normalize_search_mode
 
 
@@ -19,6 +22,9 @@ SUMMARIZE_DOCUMENTS = "summarize_documents"
 EXTRACT_TABLE = "extract_table"
 BUILD_GRAPH_CONTEXT = "build_graph_context"
 RETRIEVE_MULTIMODAL = "retrieve_multimodal"
+RETRIEVE_FORMULA = "retrieve_formula"
+RETRIEVE_STRUCTURED = "retrieve_structured"
+RETRIEVE_OCR = "retrieve_ocr"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +75,21 @@ class AgenticPlanner:
         actions.append(SEARCH_LOCAL)
         expected_outputs.append("local evidence")
         reasons.append("Local evidence is checked first for answerable questions.")
+
+        if is_formula_query(question):
+            actions.append(RETRIEVE_FORMULA)
+            expected_outputs.append("formula evidence")
+            reasons.append("The question asks about formulas or notation.")
+
+        if is_structured_document_query(question):
+            actions.append(RETRIEVE_STRUCTURED)
+            expected_outputs.append("structured OCR fields")
+            reasons.append("The question asks for a field from a structured or scanned document.")
+
+        if is_ocr_query(question):
+            actions.append(RETRIEVE_OCR)
+            expected_outputs.append("OCR text blocks")
+            reasons.append("The question asks about scanned or OCR text.")
 
         if question_type == "table_calculation":
             actions.extend([EXTRACT_TABLE, CALCULATE])
@@ -140,6 +161,12 @@ def _plan(
 
 def _question_type(question: str, interpretation: InterpretedQuery, fact_type: FactType) -> str:
     normalized = (question or "").lower()
+    if is_formula_query(question):
+        return "formula"
+    if is_structured_document_query(question):
+        return "structured_document"
+    if is_ocr_query(question):
+        return "ocr_document"
     if _table_question(normalized):
         return "table_calculation"
     if interpretation.intent == "local_document" and _summary_question(normalized):

@@ -26,8 +26,14 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 from verilume.core.embeddings import EmbeddingService
 from verilume.core.equation_repair import repair_math_text
+from verilume.core.formula_extraction import extract_formulas, formula_to_text
+from verilume.core.formula_store import FormulaStore
+from verilume.core.ocr_blocks import OCRBlock, OCRBlockStore, page_text_block
+from verilume.core.ocr_cleaning import clean_ocr_text
 from verilume.core.retrieval import ChromaRetriever
 from verilume.core.schemas import DocumentChunk, DocumentMetadata, IngestResult
+from verilume.core.structured_document_store import StructuredDocumentStore
+from verilume.core.structured_ocr import StructuredDocument, extract_structured_document
 from verilume.settings import AppSettings, ensure_app_dirs
 
 LOGGER = logging.getLogger(__name__)
@@ -155,6 +161,9 @@ def remove_documents(settings: AppSettings, documents: list[str]) -> list[str]:
             manifest.pop(str(raw_path), None)
             manifest.pop(str(path), None)
             ingestor.retriever.delete_document(str(raw_path))
+            specialized_delete = getattr(ingestor, "_delete_specialized_document", None)
+            if callable(specialized_delete):
+                specialized_delete(path.name)
             if path != raw_path:
                 ingestor.retriever.delete_document(str(path))
             try:
@@ -565,12 +574,32 @@ def _sliding_chunks(text: str, chunk_size: int, chunk_overlap: int) -> list[str]
 
 def _parse_file(
     path: Path, digest: str, settings: AppSettings
-) -> tuple[Path, list[DocumentChunk], int, dict]:
+) -> tuple[Path, list[DocumentChunk], int, dict, list, list, list]:
     pages, pdf_pages = extract_pages(path)
     document_metadata = _extract_document_metadata(path, pages, settings)
     chunks: list[DocumentChunk] = []
+    formula_items = []
+    ocr_blocks: list[OCRBlock] = []
+    structured_documents: list[StructuredDocument] = []
     for page, text in pages:
-        text = repair_math_text(text)
+        cleaned_text = clean_ocr_text(text)
+        if cleaned_text:
+            ocr_blocks.append(page_text_block(path.name, page, cleaned_text))
+        page_formulas = extract_formulas(
+            cleaned_text,
+            document=path.name,
+            page=page,
+            threshold=float(getattr(settings, "formula_detection_threshold", 0.55)),
+        )
+        formula_items.extend(page_formulas)
+        structured_document = extract_structured_document(
+            cleaned_text,
+            document=path.name,
+            page=page,
+        )
+        if structured_document and structured_document.fields:
+            structured_documents.append(structured_document)
+        text = repair_math_text(cleaned_text)
         chunker = chunk_text_semantic
         if getattr(settings, "chunk_strategy", "semantic") in {"paragraph", "legacy"}:
             chunker = chunk_text_by_paragraphs
@@ -597,6 +626,27 @@ def _parse_file(
                     metadata=chunk_metadata,
                 )
             )
+        for formula_item in page_formulas:
+            chunk_index = len(chunks)
+            chunks.append(
+                DocumentChunk(
+                    chunk_id=f"formula-{formula_item.formula_id}",
+                    text=formula_to_text(formula_item),
+                    source_path=path,
+                    document=path.name,
+                    page=page,
+                    chunk_index=chunk_index,
+                    file_hash=digest,
+                    metadata={
+                        "extension": path.suffix.lower(),
+                        "source_path": str(path),
+                        **document_metadata,
+                        "content_type": "formula",
+                        "formula_id": formula_item.formula_id,
+                        "formula_type": formula_item.formula_type or "unknown",
+                    },
+                )
+            )
     manifest_metadata = _build_document_metadata(
         path,
         pages,
@@ -604,7 +654,7 @@ def _parse_file(
         len(chunks),
         document_metadata,
     )
-    return path, chunks, pdf_pages, manifest_metadata
+    return path, chunks, pdf_pages, manifest_metadata, formula_items, ocr_blocks, structured_documents
 
 
 def _extract_document_metadata(
@@ -895,6 +945,9 @@ class DocumentIngestor:
             cache_enabled=settings.embedding_cache_enabled,
         )
         self.retriever = self._create_retriever()
+        self.formula_store = FormulaStore(self.settings.formula_store_path)
+        self.ocr_block_store = OCRBlockStore(self.settings.ocr_block_store_path)
+        self.structured_store = StructuredDocumentStore(self.settings.structured_document_store_path)
 
     def _create_retriever(self) -> ChromaRetriever:
         return ChromaRetriever(
@@ -937,9 +990,15 @@ class DocumentIngestor:
         staging_root = Path(tempfile.mkdtemp(prefix="verilume-staging-"))
         staged_chroma = staging_root / "chroma_db"
         staged_manifest = staging_root / "ingestion_manifest.json"
+        staged_formula_store = staging_root / "formulas.sqlite"
+        staged_ocr_store = staging_root / "ocr_blocks.sqlite"
+        staged_structured_store = staging_root / "structured_documents.sqlite"
         staged_settings = self.settings.with_overrides(
             chroma_dir=staged_chroma,
             manifest_path=staged_manifest,
+            formula_store_path=staged_formula_store,
+            ocr_block_store_path=staged_ocr_store,
+            structured_document_store_path=staged_structured_store,
             reset_db=False,
         )
         staged = DocumentIngestor(staged_settings)
@@ -952,7 +1011,13 @@ class DocumentIngestor:
                 preview = "; ".join(result.errors[:3])
                 raise IngestStateError(f"Staged ingestion failed: {preview}")
             staged.retriever.close()
-            self._install_staged_snapshot(staged_chroma=staged_chroma, staged_manifest=staged_manifest)
+            self._install_staged_snapshot(
+                staged_chroma=staged_chroma,
+                staged_manifest=staged_manifest,
+                staged_formula_store=staged_formula_store,
+                staged_ocr_store=staged_ocr_store,
+                staged_structured_store=staged_structured_store,
+            )
             return result
         finally:
             shutil.rmtree(staging_root, ignore_errors=True)
@@ -1009,9 +1074,22 @@ class DocumentIngestor:
             for done, future in enumerate(as_completed(futures), start=1):
                 path, digest = futures[future]
                 try:
-                    parsed_path, chunks, pages, document_metadata = future.result()
+                    (
+                        parsed_path,
+                        chunks,
+                        pages,
+                        document_metadata,
+                        formula_items,
+                        ocr_blocks,
+                        structured_documents,
+                    ) = future.result()
                     self.retriever.delete_document(str(parsed_path))
+                    self._delete_specialized_document(parsed_path.name)
                     indexed_chunks += self._index_chunks(chunks, progress)
+                    self.formula_store.add_many(formula_items)
+                    self.ocr_block_store.add_many(ocr_blocks)
+                    for structured_document in structured_documents:
+                        self.structured_store.add_structured_document(structured_document)
                     pdf_pages += pages
                     manifest[str(parsed_path)] = {
                         "hash": digest,
@@ -1084,33 +1162,61 @@ class DocumentIngestor:
         _make_tree_writable(self.settings.chroma_dir)
         self.retriever = self._create_retriever()
         self.retriever.reset()
+        for store_path in (
+            self.settings.formula_store_path,
+            self.settings.ocr_block_store_path,
+            self.settings.structured_document_store_path,
+        ):
+            try:
+                store_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self.formula_store = FormulaStore(self.settings.formula_store_path)
+        self.ocr_block_store = OCRBlockStore(self.settings.ocr_block_store_path)
+        self.structured_store = StructuredDocumentStore(self.settings.structured_document_store_path)
 
     def _remove_missing_documents(self, manifest: dict[str, dict]) -> None:
         missing_paths = [stored_path for stored_path in manifest if not Path(stored_path).exists()]
         for stored_path in missing_paths:
             self.retriever.delete_document(stored_path)
+            self._delete_specialized_document(Path(stored_path).name)
             manifest.pop(stored_path, None)
 
     def _create_backup_snapshot(self) -> dict[str, object]:
         root = Path(tempfile.mkdtemp(prefix="verilume-ingest-backup-"))
         chroma_backup = root / "chroma_db"
         manifest_backup = root / "ingestion_manifest.json"
+        formula_store_backup = root / "formulas.sqlite"
+        ocr_store_backup = root / "ocr_blocks.sqlite"
+        structured_store_backup = root / "structured_documents.sqlite"
 
         if self.settings.chroma_dir.exists():
             shutil.copytree(self.settings.chroma_dir, chroma_backup, dirs_exist_ok=True)
         if self.settings.manifest_path.exists():
             shutil.copy2(self.settings.manifest_path, manifest_backup)
+        if self.settings.formula_store_path.exists():
+            shutil.copy2(self.settings.formula_store_path, formula_store_backup)
+        if self.settings.ocr_block_store_path.exists():
+            shutil.copy2(self.settings.ocr_block_store_path, ocr_store_backup)
+        if self.settings.structured_document_store_path.exists():
+            shutil.copy2(self.settings.structured_document_store_path, structured_store_backup)
 
         return {
             "root": root,
             "chroma_dir": chroma_backup,
             "manifest_path": manifest_backup,
+            "formula_store_path": formula_store_backup,
+            "ocr_block_store_path": ocr_store_backup,
+            "structured_document_store_path": structured_store_backup,
             "previous_count": self.retriever.count(),
         }
 
     def _restore_backup_snapshot(self, backup: dict[str, object]) -> None:
         chroma_backup = Path(str(backup["chroma_dir"]))
         manifest_backup = Path(str(backup["manifest_path"]))
+        formula_store_backup = Path(str(backup["formula_store_path"]))
+        ocr_store_backup = Path(str(backup["ocr_block_store_path"]))
+        structured_store_backup = Path(str(backup["structured_document_store_path"]))
 
         self.retriever.close()
         if self.settings.chroma_dir.exists():
@@ -1125,9 +1231,23 @@ class DocumentIngestor:
             shutil.copy2(manifest_backup, self.settings.manifest_path)
         elif self.settings.manifest_path.exists():
             self.settings.manifest_path.unlink()
+        _restore_sqlite_file(formula_store_backup, self.settings.formula_store_path)
+        _restore_sqlite_file(ocr_store_backup, self.settings.ocr_block_store_path)
+        _restore_sqlite_file(structured_store_backup, self.settings.structured_document_store_path)
         self.retriever = self._create_retriever()
+        self.formula_store = FormulaStore(self.settings.formula_store_path)
+        self.ocr_block_store = OCRBlockStore(self.settings.ocr_block_store_path)
+        self.structured_store = StructuredDocumentStore(self.settings.structured_document_store_path)
 
-    def _install_staged_snapshot(self, *, staged_chroma: Path, staged_manifest: Path) -> None:
+    def _install_staged_snapshot(
+        self,
+        *,
+        staged_chroma: Path,
+        staged_manifest: Path,
+        staged_formula_store: Path,
+        staged_ocr_store: Path,
+        staged_structured_store: Path,
+    ) -> None:
         self.retriever.close()
         if self.settings.chroma_dir.exists():
             _make_tree_writable(self.settings.chroma_dir)
@@ -1142,7 +1262,13 @@ class DocumentIngestor:
             shutil.copy2(staged_manifest, self.settings.manifest_path)
         elif self.settings.manifest_path.exists():
             self.settings.manifest_path.unlink()
+        _restore_sqlite_file(staged_formula_store, self.settings.formula_store_path)
+        _restore_sqlite_file(staged_ocr_store, self.settings.ocr_block_store_path)
+        _restore_sqlite_file(staged_structured_store, self.settings.structured_document_store_path)
         self.retriever = self._create_retriever()
+        self.formula_store = FormulaStore(self.settings.formula_store_path)
+        self.ocr_block_store = OCRBlockStore(self.settings.ocr_block_store_path)
+        self.structured_store = StructuredDocumentStore(self.settings.structured_document_store_path)
 
     def _cleanup_backup_snapshot(self, backup: dict[str, object]) -> None:
         shutil.rmtree(Path(str(backup["root"])), ignore_errors=True)
@@ -1155,6 +1281,11 @@ class DocumentIngestor:
         if result.errors and previous_count > 0 and current_count < max(1, previous_count // 2):
             return "retriever lost most indexed chunks after errors"
         return None
+
+    def _delete_specialized_document(self, document: str) -> None:
+        self.formula_store.delete_document(document)
+        self.ocr_block_store.delete_document(document)
+        self.structured_store.delete_document(document)
 
 
 @contextmanager
@@ -1169,6 +1300,17 @@ def _ingest_lock(settings: AppSettings):
         finally:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _restore_sqlite_file(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.exists():
+        shutil.copy2(source, target)
+        return
+    try:
+        target.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _metadata(chunk: DocumentChunk) -> dict:

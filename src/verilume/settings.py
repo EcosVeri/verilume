@@ -412,6 +412,9 @@ def _saved_config_values(
         "KNOWLEDGE_GRAPH_PATH": settings.knowledge_graph_path,
         "ENABLE_GRAPHRAG": settings.enable_graphrag,
         "MULTIMODAL_STORE_PATH": settings.multimodal_store_path,
+        "FORMULA_STORE_PATH": settings.formula_store_path,
+        "OCR_BLOCK_STORE_PATH": settings.ocr_block_store_path,
+        "STRUCTURED_DOCUMENT_STORE_PATH": settings.structured_document_store_path,
         "BENCHMARK_MODE": settings.benchmark_mode,
         # Retrieval and UI
         "VERILUME_APPEARANCE": settings.appearance,
@@ -443,6 +446,7 @@ def _saved_config_values(
         "STRONG_LOCAL_MIN_SOURCES": settings.strong_local_min_sources,
         "ANSWER_VERIFICATION_MODE": settings.answer_verification_mode,
         "ANSWER_VERIFICATION_MIN_OVERLAP": settings.answer_verification_min_overlap,
+        "FORMULA_DETECTION_THRESHOLD": settings.formula_detection_threshold,
     }
 
 
@@ -477,6 +481,9 @@ class AppSettings:
     knowledge_graph_path: Path = DATA_HOME / "knowledge_graph.sqlite"
     enable_graphrag: bool = True
     multimodal_store_path: Path = DATA_HOME / "multimodal.sqlite"
+    formula_store_path: Path = DATA_HOME / "formulas.sqlite"
+    ocr_block_store_path: Path = DATA_HOME / "ocr_blocks.sqlite"
+    structured_document_store_path: Path = DATA_HOME / "structured_documents.sqlite"
     benchmark_mode: bool = False
 
     # Embeddings
@@ -573,6 +580,7 @@ class AppSettings:
     strong_local_min_sources: int = 1
     answer_verification_mode: str = "heuristic"
     answer_verification_min_overlap: float = 0.18
+    formula_detection_threshold: float = 0.55
     evidence_official_domains: tuple[str, ...] = DEFAULT_EVIDENCE_OFFICIAL_DOMAINS
     evidence_authority_boost: float = 0.35
     evidence_freshness_boost: float = 0.1
@@ -627,6 +635,21 @@ class AppSettings:
             self,
             "multimodal_store_path",
             Path(self.multimodal_store_path).expanduser(),
+        )
+        object.__setattr__(
+            self,
+            "formula_store_path",
+            Path(self.formula_store_path).expanduser(),
+        )
+        object.__setattr__(
+            self,
+            "ocr_block_store_path",
+            Path(self.ocr_block_store_path).expanduser(),
+        )
+        object.__setattr__(
+            self,
+            "structured_document_store_path",
+            Path(self.structured_document_store_path).expanduser(),
         )
 
         object.__setattr__(
@@ -926,6 +949,11 @@ class AppSettings:
         )
         object.__setattr__(
             self,
+            "formula_detection_threshold",
+            max(0.1, min(0.95, float(self.formula_detection_threshold))),
+        )
+        object.__setattr__(
+            self,
             "evidence_official_domains",
             tuple(str(item).strip().lower() for item in self.evidence_official_domains if str(item).strip()),
         )
@@ -1031,6 +1059,18 @@ class AppSettings:
             multimodal_store_path=_path(
                 "MULTIMODAL_STORE_PATH",
                 defaults.multimodal_store_path,
+            ),
+            formula_store_path=_path(
+                "FORMULA_STORE_PATH",
+                defaults.formula_store_path,
+            ),
+            ocr_block_store_path=_path(
+                "OCR_BLOCK_STORE_PATH",
+                defaults.ocr_block_store_path,
+            ),
+            structured_document_store_path=_path(
+                "STRUCTURED_DOCUMENT_STORE_PATH",
+                defaults.structured_document_store_path,
             ),
             benchmark_mode=_bool(
                 "BENCHMARK_MODE",
@@ -1293,6 +1333,10 @@ class AppSettings:
                 "ANSWER_VERIFICATION_MIN_OVERLAP",
                 defaults.answer_verification_min_overlap,
             ),
+            formula_detection_threshold=_float(
+                "FORMULA_DETECTION_THRESHOLD",
+                defaults.formula_detection_threshold,
+            ),
             evidence_official_domains=_csv(
                 "EVIDENCE_OFFICIAL_DOMAINS",
                 defaults.evidence_official_domains,
@@ -1408,3 +1452,6 @@ def ensure_app_dirs(settings: AppSettings) -> None:
     settings.table_store_dir.mkdir(parents=True, exist_ok=True)
     settings.knowledge_graph_path.parent.mkdir(parents=True, exist_ok=True)
     settings.multimodal_store_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.formula_store_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.ocr_block_store_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.structured_document_store_path.parent.mkdir(parents=True, exist_ok=True)

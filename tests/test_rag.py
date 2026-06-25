@@ -1461,9 +1461,15 @@ class RAGRoutingTests(unittest.TestCase):
             model_answer="Model answer that should not be used.",
             local_sources=[dic_source],
         )
-        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        with TemporaryDirectory() as temp_dir:
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=Path(temp_dir) / "documents",
+                manifest_path=Path(temp_dir) / "manifest.json",
+            )
 
-        result = rag.ask("summaries dic.pdf")
+            result = rag.ask("summaries dic.pdf")
 
         self.assertEqual(result.confidence, "local-grounded")
         self.assertFalse(result.used_web)
@@ -1472,6 +1478,58 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(len(rag.generator.local_calls), 1)
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(rag.web_search.queries, [])
+
+    def test_explicit_filename_summaries_uses_document_metadata_when_available(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "documents"
+            docs_dir.mkdir()
+            manifest_path = root / "manifest.json"
+            dic_path = docs_dir / "dic.pdf"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        str(dic_path): {
+                            "hash": "dic-hash",
+                            "chunks": 8,
+                            "pdf_pages": 12,
+                            "document_metadata": {
+                                "document": "dic.pdf",
+                                "title": "Local Dictionary",
+                                "summary": "Terminology and definitions from the uploaded dictionary.",
+                                "keywords": ["terminology", "definitions"],
+                                "pages": 12,
+                                "chunks": 8,
+                                "source_path": str(dic_path),
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rag = self._make_rag(
+                local_answer=LOCAL_UNKNOWN,
+                model_answer="Model answer that should not be used.",
+                local_sources=[],
+            )
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=docs_dir,
+                manifest_path=manifest_path,
+            )
+
+            result = rag.ask("summaries dic.pdf")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Local Dictionary", result.answer)
+        self.assertIn("Terminology and definitions", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["dic.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(rag.web_search.queries, [])
+        self.assertIn("exact filename match", result.diagnostics["local_win_reasons"])
 
     def test_examples_from_local_files_uses_local_evidence(self) -> None:
         example_source = LocalSource(
@@ -3323,8 +3381,15 @@ class RAGRoutingTests(unittest.TestCase):
         )
         rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
         rag.retriever = CorpusBrowsingRetriever([], [passport, diploma, regression])
+        with TemporaryDirectory() as temp_dir:
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=Path(temp_dir) / "documents",
+                manifest_path=Path(temp_dir) / "manifest.json",
+            )
 
-        result = rag.ask("summarise the documents")
+            result = rag.ask("summarise the documents")
 
         self.assertEqual(result.confidence, "local-grounded")
         self.assertFalse(result.used_web)
@@ -3340,6 +3405,72 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("[S3]", result.answer)
         self.assertEqual(len(rag.generator.model_calls), 0)
         self.assertTrue(rag.retriever.corpus_calls)
+
+    def test_local_corpus_summary_prefers_document_metadata(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "documents"
+            docs_dir.mkdir()
+            manifest_path = root / "manifest.json"
+            bayes = docs_dir / "bayesian.pdf"
+            regression = docs_dir / "regression.pdf"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        str(bayes): {
+                            "hash": "bayes",
+                            "chunks": 120,
+                            "pdf_pages": 350,
+                            "document_metadata": {
+                                "document": "bayesian.pdf",
+                                "title": "Bayesian Statistics (2012)",
+                                "summary": "Comprehensive Bayesian statistics textbook covering regression, Gibbs sampling, MCMC, diagnostics, and importance sampling.",
+                                "keywords": ["Bayesian inference", "Gibbs sampling", "MCMC"],
+                                "pages": 350,
+                                "chunks": 120,
+                                "source_path": str(bayes),
+                            },
+                        },
+                        str(regression): {
+                            "hash": "regression",
+                            "chunks": 12,
+                            "pdf_pages": 24,
+                            "document_metadata": {
+                                "document": "regression.pdf",
+                                "title": "Regression Exercises",
+                                "summary": "Applied regression exercises with Stata examples and interpretation.",
+                                "keywords": ["regression", "Stata"],
+                                "pages": 24,
+                                "chunks": 12,
+                                "source_path": str(regression),
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=docs_dir,
+                manifest_path=manifest_path,
+            )
+
+            result = rag.ask("Give a brief summary of all the 10 files")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Bayesian Statistics (2012)", result.answer)
+        self.assertIn("Regression Exercises", result.answer)
+        self.assertIn("Topics:", result.answer)
+        self.assertEqual(
+            [source.document for source in result.local_sources],
+            ["bayesian.pdf", "regression.pdf"],
+        )
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertIn("document-level summary metadata", result.diagnostics["local_win_reasons"])
 
     def test_content_of_files_browses_local_corpus(self) -> None:
         local_source = LocalSource(

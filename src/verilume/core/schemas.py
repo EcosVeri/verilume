@@ -36,6 +36,19 @@ class ChatMessage:
 
 
 @dataclass(slots=True)
+class DocumentMetadata:
+    document: str
+    title: str
+    summary: str
+    keywords: list[str]
+    pages: int
+    chunks: int
+    source_path: str = ""
+    authors: str = ""
+    document_kind: str = "document"
+
+
+@dataclass(slots=True)
 class RAGResponse:
     answer: str
     local_sources: list[LocalSource]

@@ -843,6 +843,43 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   font-weight: 780;
 }
 
+.veri-evidence-reasons {
+  border: 1px solid rgba(54, 209, 196, .22);
+  border-radius: 8px;
+  background: rgba(54, 209, 196, .045);
+  margin: .52rem 0 .72rem 0;
+  padding: .62rem .7rem;
+}
+
+.veri-evidence-reasons strong {
+  color: var(--veri-text);
+  display: block;
+  font-size: .76rem;
+  font-weight: 820;
+  letter-spacing: .05rem;
+  margin-bottom: .4rem;
+  text-transform: uppercase;
+}
+
+.veri-evidence-reasons ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .36rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.veri-evidence-reasons li {
+  border: 1px solid var(--veri-line);
+  border-radius: 999px;
+  color: var(--veri-muted);
+  font-size: .75rem;
+  font-weight: 720;
+  line-height: 1.2;
+  padding: .28rem .48rem;
+}
+
 .veri-source-strength-row {
   align-items: center;
   display: grid;

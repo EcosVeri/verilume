@@ -12,9 +12,11 @@ from verilume.core.schemas import DocumentChunk
 from verilume.ingest import (
     DocumentIngestor,
     _adaptive_embedding_batch_size,
+    _build_document_metadata,
     _extract_document_metadata,
     _normalize_pdf_text,
     chunk_text_semantic,
+    document_metadata_from_manifest,
     extract_pages,
     load_manifest,
     removable_documents,
@@ -88,6 +90,67 @@ class IngestCleanupTests(unittest.TestCase):
         self.assertIn("combines Hamiltonian Monte Carlo", metadata["abstract"])
         self.assertIn("Replica Exchange", metadata["keywords"])
         self.assertEqual(metadata["document_kind"], "research_paper")
+
+    def test_document_level_summary_is_manifest_ready(self) -> None:
+        text = """
+        Bayesian Statistics (2012)
+
+        Abstract
+        Comprehensive Bayesian statistics textbook covering regression, Gibbs sampling,
+        Markov chain Monte Carlo, model assessment, diagnostics, and importance sampling.
+
+        Keywords: Bayesian inference; Gibbs sampling; MCMC; regression
+        """
+        path = Path("bayesian-statistics.pdf")
+        extracted = _extract_document_metadata(path, [(1, text)])
+
+        metadata = _build_document_metadata(
+            path,
+            [(1, text)],
+            pdf_pages=350,
+            chunk_count=120,
+            extracted_metadata=extracted,
+        )
+
+        self.assertEqual(metadata["title"], "Bayesian Statistics (2012)")
+        self.assertIn("Gibbs sampling", metadata["summary"])
+        self.assertIn("MCMC", metadata["keywords"])
+        self.assertEqual(metadata["pages"], 350)
+        self.assertEqual(metadata["chunks"], 120)
+
+    def test_document_metadata_from_manifest_reads_document_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            docs_dir = root / "docs"
+            docs_dir.mkdir()
+            manifest_path = root / "manifest.json"
+            document_path = docs_dir / "dic.pdf"
+            write_manifest(
+                manifest_path,
+                {
+                    str(document_path): {
+                        "hash": "abc",
+                        "chunks": 8,
+                        "pdf_pages": 12,
+                        "document_metadata": {
+                            "document": "dic.pdf",
+                            "title": "Dictionary",
+                            "summary": "Terminology and definitions.",
+                            "keywords": ["terminology", "definitions"],
+                            "pages": 12,
+                            "chunks": 8,
+                            "source_path": str(document_path),
+                        },
+                    }
+                },
+            )
+            settings = AppSettings(docs_dir=docs_dir, manifest_path=manifest_path)
+
+            metadata = document_metadata_from_manifest(settings)
+
+        self.assertEqual(len(metadata), 1)
+        self.assertEqual(metadata[0].document, "dic.pdf")
+        self.assertEqual(metadata[0].summary, "Terminology and definitions.")
 
     def test_adaptive_embedding_batch_size_uses_chunk_length(self) -> None:
         self.assertEqual(

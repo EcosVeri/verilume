@@ -405,6 +405,16 @@ def _render_evidence_summary(response: RAGResponse) -> None:
         if rendered_strength
         else ""
     )
+    local_win_reasons = _summary_value_list(diagnostics.get("local_win_reasons"))
+    reasons_block = ""
+    if local_win_reasons:
+        rendered_reasons = "".join(f"<li>✓ {escape(reason)}</li>" for reason in local_win_reasons)
+        reasons_block = (
+            '<div class="veri-evidence-reasons">'
+            "<strong>Why Local Won</strong>"
+            f"<ul>{rendered_reasons}</ul>"
+            "</div>"
+        )
     search_mode = _summary_search_mode(diagnostics)
     searched = _summary_source_list(diagnostics.get("sources_searched"))
     used = _summary_source_list(diagnostics.get("sources_used"))
@@ -431,6 +441,7 @@ def _render_evidence_summary(response: RAGResponse) -> None:
   <div class="veri-evidence-summary-title">Evidence Summary</div>
   <div class="veri-evidence-summary-badges">{rendered_badges}</div>
   {rows_block}
+  {reasons_block}
   {strength_block}
 </div>
         """,
@@ -453,15 +464,23 @@ def _summary_search_mode(diagnostics: dict[str, Any]) -> str:
 
 
 def _summary_source_list(value: Any) -> str:
-    if not isinstance(value, (list, tuple)):
-        return ""
     labels = []
-    for item in value:
+    for item in _summary_value_list(value):
         text = str(item or "").strip()
         if not text:
             continue
         labels.append({"ai": "AI", "model_knowledge": "AI"}.get(text, _friendly_token(text)))
     return ", ".join(labels)
+
+
+def _summary_value_list(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item]
+    return [str(value)]
 
 
 def _render_evidence_details(response: RAGResponse) -> None:
@@ -643,6 +662,7 @@ def _evidence_detail_rows(response: RAGResponse) -> list[tuple[str, str]]:
         ("Local older than web", diagnostics.get("local_is_older_than_web")),
         ("Source agreement", diagnostics.get("source_agreement")),
         ("Evidence winner", diagnostics.get("evidence_winner")),
+        ("Why local won", diagnostics.get("local_win_reasons")),
         ("Evidence streams", diagnostics.get("evidence_streams")),
         ("Used model knowledge", diagnostics.get("used_model_knowledge")),
         ("Model knowledge available", diagnostics.get("model_knowledge_available")),

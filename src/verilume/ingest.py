@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import unicodedata
 from abc import ABC, abstractmethod
+from dataclasses import asdict
 from contextlib import contextmanager
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -26,7 +27,7 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 from verilume.core.embeddings import EmbeddingService
 from verilume.core.equation_repair import repair_math_text
 from verilume.core.retrieval import ChromaRetriever
-from verilume.core.schemas import DocumentChunk, IngestResult
+from verilume.core.schemas import DocumentChunk, DocumentMetadata, IngestResult
 from verilume.settings import AppSettings, ensure_app_dirs
 
 LOGGER = logging.getLogger(__name__)
@@ -197,6 +198,21 @@ def load_manifest(path: Path) -> dict[str, dict]:
 def write_manifest(path: Path, manifest: dict[str, dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def document_metadata_from_manifest(settings: AppSettings) -> list[DocumentMetadata]:
+    manifest = load_manifest(settings.manifest_path)
+    documents: list[DocumentMetadata] = []
+    for source_path, entry in manifest.items():
+        if not isinstance(entry, dict):
+            continue
+        raw_metadata = entry.get("document_metadata")
+        if not isinstance(raw_metadata, dict):
+            raw_metadata = _legacy_manifest_document_metadata(source_path, entry)
+        metadata = _document_metadata_from_dict(source_path, raw_metadata, entry)
+        if metadata:
+            documents.append(metadata)
+    return documents
 
 
 def _read_text_file(path: Path) -> str:
@@ -549,7 +565,7 @@ def _sliding_chunks(text: str, chunk_size: int, chunk_overlap: int) -> list[str]
 
 def _parse_file(
     path: Path, digest: str, settings: AppSettings
-) -> tuple[Path, list[DocumentChunk], int]:
+) -> tuple[Path, list[DocumentChunk], int, dict]:
     pages, pdf_pages = extract_pages(path)
     document_metadata = _extract_document_metadata(path, pages, settings)
     chunks: list[DocumentChunk] = []
@@ -581,7 +597,14 @@ def _parse_file(
                     metadata=chunk_metadata,
                 )
             )
-    return path, chunks, pdf_pages
+    manifest_metadata = _build_document_metadata(
+        path,
+        pages,
+        pdf_pages,
+        len(chunks),
+        document_metadata,
+    )
+    return path, chunks, pdf_pages, manifest_metadata
 
 
 def _extract_document_metadata(
@@ -700,6 +723,166 @@ def _metadata_lines(text: str) -> list[str]:
 def _metadata_text(value: str, limit: int = 1200) -> str:
     cleaned = re.sub(r"\s+", " ", (value or "")).strip()
     return cleaned[:limit].strip()
+
+
+def _build_document_metadata(
+    path: Path,
+    pages: list[tuple[int | None, str]],
+    pdf_pages: int,
+    chunk_count: int,
+    extracted_metadata: dict[str, str],
+) -> dict:
+    page_count = int(pdf_pages or len([page for page, text in pages if page is not None and text.strip()]))
+    if page_count <= 0 and pages:
+        page_count = len([text for _page, text in pages if text.strip()])
+    keywords = _document_keywords(extracted_metadata, pages)
+    metadata = DocumentMetadata(
+        document=path.name,
+        title=extracted_metadata.get("document_title") or path.stem.replace("_", " ").replace("-", " "),
+        summary=_document_level_summary(path, pages, extracted_metadata, keywords),
+        keywords=keywords,
+        pages=max(0, page_count),
+        chunks=max(0, int(chunk_count)),
+        source_path=str(path),
+        authors=extracted_metadata.get("authors", ""),
+        document_kind=extracted_metadata.get("document_kind", "document"),
+    )
+    return asdict(metadata)
+
+
+def _document_level_summary(
+    path: Path,
+    pages: list[tuple[int | None, str]],
+    metadata: dict[str, str],
+    keywords: list[str],
+) -> str:
+    abstract = _metadata_text(metadata.get("abstract", ""), limit=700)
+    if abstract:
+        return abstract
+    sample = _metadata_text(" ".join(text for _page, text in pages[:5]), limit=3500)
+    title = metadata.get("document_title") or path.stem.replace("_", " ").replace("-", " ")
+    sentences = _summary_sentences(sample, title)
+    if sentences:
+        return _metadata_text(" ".join(sentences), limit=700)
+    keyword_text = ", ".join(keywords[:8])
+    if keyword_text:
+        return f"Document about {keyword_text}."
+    return "Indexed local document content."
+
+
+def _summary_sentences(text: str, title: str) -> list[str]:
+    title_key = _metadata_text(title).lower()
+    candidates = re.split(r"(?<=[.!?])\s+", _metadata_text(text, limit=3500))
+    sentences: list[str] = []
+    for sentence in candidates:
+        cleaned = _metadata_text(sentence, limit=260)
+        lowered = cleaned.lower()
+        if not cleaned or lowered == title_key:
+            continue
+        if len(cleaned) < 45 or len(cleaned.split()) < 7:
+            continue
+        if lowered.startswith(("abstract", "keywords", "contents", "table of contents")):
+            continue
+        sentences.append(cleaned)
+        if len(sentences) >= 3:
+            break
+    return sentences
+
+
+def _document_keywords(metadata: dict[str, str], pages: list[tuple[int | None, str]]) -> list[str]:
+    explicit = _split_keywords(metadata.get("keywords", ""))
+    if explicit:
+        return explicit[:16]
+    sample = " ".join(
+        [
+            metadata.get("document_title", ""),
+            metadata.get("abstract", ""),
+            " ".join(text for _page, text in pages[:3]),
+        ]
+    )
+    terms = re.findall(r"[A-Za-z][A-Za-z0-9\-]{3,}", sample.lower())
+    stopwords = {
+        "about",
+        "after",
+        "also",
+        "because",
+        "been",
+        "between",
+        "chapter",
+        "document",
+        "from",
+        "have",
+        "into",
+        "more",
+        "page",
+        "pages",
+        "paper",
+        "section",
+        "that",
+        "their",
+        "there",
+        "these",
+        "this",
+        "those",
+        "using",
+        "with",
+    }
+    counts: dict[str, int] = {}
+    for term in terms:
+        if term in stopwords or len(term) < 4:
+            continue
+        counts[term] = counts.get(term, 0) + 1
+    return [term for term, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:12]]
+
+
+def _split_keywords(value: str) -> list[str]:
+    return [
+        _metadata_text(item, limit=80)
+        for item in re.split(r"[;,|]", value or "")
+        if _metadata_text(item, limit=80)
+    ]
+
+
+def _legacy_manifest_document_metadata(
+    source_path: str,
+    entry: dict,
+) -> dict:
+    path = Path(source_path)
+    return {
+        "document": path.name,
+        "title": entry.get("document_title") or path.stem.replace("_", " ").replace("-", " "),
+        "summary": entry.get("summary") or "",
+        "keywords": entry.get("keywords") or [],
+        "pages": entry.get("pdf_pages") or 0,
+        "chunks": entry.get("chunks") or 0,
+        "source_path": source_path,
+        "authors": entry.get("authors") or "",
+        "document_kind": entry.get("document_kind") or "document",
+    }
+
+
+def _document_metadata_from_dict(
+    source_path: str,
+    raw_metadata: dict,
+    entry: dict,
+) -> DocumentMetadata | None:
+    try:
+        keywords = raw_metadata.get("keywords") or []
+        if isinstance(keywords, str):
+            keywords = _split_keywords(keywords)
+        return DocumentMetadata(
+            document=str(raw_metadata.get("document") or Path(source_path).name),
+            title=str(raw_metadata.get("title") or Path(source_path).stem),
+            summary=str(raw_metadata.get("summary") or ""),
+            keywords=[str(keyword) for keyword in keywords if str(keyword).strip()],
+            pages=int(raw_metadata.get("pages") or entry.get("pdf_pages") or 0),
+            chunks=int(raw_metadata.get("chunks") or entry.get("chunks") or 0),
+            source_path=str(raw_metadata.get("source_path") or source_path),
+            authors=str(raw_metadata.get("authors") or ""),
+            document_kind=str(raw_metadata.get("document_kind") or "document"),
+        )
+    except Exception:
+        return None
 
 
 class DocumentIngestor:
@@ -826,7 +1009,7 @@ class DocumentIngestor:
             for done, future in enumerate(as_completed(futures), start=1):
                 path, digest = futures[future]
                 try:
-                    parsed_path, chunks, pages = future.result()
+                    parsed_path, chunks, pages, document_metadata = future.result()
                     self.retriever.delete_document(str(parsed_path))
                     indexed_chunks += self._index_chunks(chunks, progress)
                     pdf_pages += pages
@@ -834,6 +1017,7 @@ class DocumentIngestor:
                         "hash": digest,
                         "chunks": len(chunks),
                         "pdf_pages": pages,
+                        "document_metadata": document_metadata,
                     }
                 except Exception as exc:
                     message = f"{path.name}: {exc}"

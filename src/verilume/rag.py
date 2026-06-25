@@ -97,6 +97,7 @@ from verilume.core.web_search import (
     create_web_search,
     normalize_web_url_key,
 )
+from verilume.ingest import document_metadata_from_manifest
 from verilume.settings import AppSettings, ensure_app_dirs
 from verilume.utils.document_stats import collect_document_stats
 
@@ -1728,6 +1729,54 @@ class VerilumeRAG:
         except Exception:
             return []
 
+    def _document_summary_sources(self, question: str) -> list[LocalSource]:
+        if not (_is_local_summary_request(question) or _is_local_corpus_overview_request(question)):
+            return []
+        try:
+            documents = document_metadata_from_manifest(self.settings)
+        except Exception:
+            return []
+        if not documents:
+            return []
+
+        explicit_files = _explicit_local_file_names(question)
+        if explicit_files:
+            documents = [
+                metadata
+                for metadata in documents
+                if _document_metadata_matches_explicit_file(metadata, explicit_files)
+            ]
+        sources: list[LocalSource] = []
+        for index, metadata in enumerate(documents, start=1):
+            if not str(metadata.summary or "").strip():
+                continue
+            text = _document_metadata_source_text(metadata)
+            if not text.strip():
+                continue
+            source = LocalSource(
+                label=f"S{index}",
+                document=metadata.document,
+                page=None,
+                chunk_id=f"document-summary:{metadata.source_path or metadata.document}",
+                text=text,
+                score=1.0,
+                metadata={
+                    "document_summary": True,
+                    "document_title": metadata.title,
+                    "document_level_summary": metadata.summary,
+                    "keywords": ", ".join(metadata.keywords),
+                    "document_keywords": metadata.keywords,
+                    "document_pages": metadata.pages,
+                    "document_chunks": metadata.chunks,
+                    "authors": metadata.authors,
+                    "document_kind": metadata.document_kind,
+                    "source_path": metadata.source_path,
+                    "retrieval": "document-summary",
+                },
+            )
+            sources.append(source)
+        return _relabel_local_sources(sources)
+
     def _rerank_local(self, query: str, sources: Sequence[LocalSource]) -> list[LocalSource]:
         return rerank_local_sources(
             query,
@@ -1963,6 +2012,15 @@ class VerilumeRAG:
 
     def _answer_local_file_question(self, question: str, local_sources: list[LocalSource], diagnostics: dict, on_stage=None) -> RAGResponse:
         corpus_overview = _is_local_corpus_overview_request(question)
+        document_summary_sources = self._document_summary_sources(question)
+        if document_summary_sources:
+            diagnostics["document_summary_sources"] = len(document_summary_sources)
+            diagnostics["document_summary_mode"] = True
+            local_sources = _merge_local_sources(
+                document_summary_sources,
+                local_sources,
+                limit=max(len(document_summary_sources), self.settings.retriever_k * 8),
+            )
         if corpus_overview:
             corpus_sources = self._local_corpus_sources()
             if corpus_sources:
@@ -2033,8 +2091,36 @@ class VerilumeRAG:
         if not local_sources:
             return RAGResponse(LOCAL_FILE_NOT_FOUND, [], [], False, "low", diagnostics)
         overview_sources = _relabel_local_sources(_first_source_per_document(local_sources))
+        document_summary_answer = _document_level_summary_answer(question, overview_sources)
+        if document_summary_answer:
+            diagnostics["local_win_reasons"] = _local_win_reasons(
+                question,
+                overview_sources,
+                self.settings,
+            )
+            _finalize_evidence_diagnostics(
+                diagnostics,
+                answer=document_summary_answer,
+                used_local_sources=overview_sources,
+                used_web_sources=[],
+                model_answer=None,
+                model_sufficient=False,
+            )
+            return RAGResponse(
+                document_summary_answer,
+                overview_sources,
+                [],
+                False,
+                "local-grounded",
+                diagnostics,
+            )
         overview_answer = _local_corpus_overview_answer(question, overview_sources)
         if overview_answer:
+            diagnostics["local_win_reasons"] = _local_win_reasons(
+                question,
+                overview_sources,
+                self.settings,
+            )
             _finalize_evidence_diagnostics(
                 diagnostics,
                 answer=overview_answer,
@@ -2888,6 +2974,52 @@ def _local_corpus_overview_answer(question: str, local_sources: Sequence[LocalSo
     return "\n".join(lines)
 
 
+def _document_level_summary_answer(
+    question: str,
+    local_sources: Sequence[LocalSource],
+) -> str | None:
+    if not (_is_local_summary_request(question) or _is_local_corpus_overview_request(question)):
+        return None
+    first_sources = _first_source_per_document(local_sources)
+    document_sources = [
+        source for source in first_sources if (source.metadata or {}).get("document_summary")
+    ]
+    if not document_sources:
+        return None
+
+    document_count = len(document_sources)
+    noun = "document" if document_count == 1 else "documents"
+    lines = [f"I found {document_count} indexed local {noun}:"]
+    for source in document_sources:
+        metadata = source.metadata or {}
+        title = str(metadata.get("document_title") or source.document)
+        heading = title if title == source.document else f"{title} ({source.document})"
+        lines.extend(
+            [
+                "",
+                f"{heading} [{source.label}]",
+                f"Summary: {_local_document_compact_summary(source.document, [source])}",
+            ]
+        )
+        topics = _local_document_topics(source, [source])
+        if topics:
+            lines.append(f"Topics: {topics}")
+        keywords = _local_document_keywords(source)
+        if keywords:
+            lines.append(f"Keywords: {keywords}")
+        pages = int(metadata.get("document_pages") or 0)
+        chunks = int(metadata.get("document_chunks") or 0)
+        details = []
+        if pages:
+            details.append(f"{pages} pages")
+        if chunks:
+            details.append(f"{chunks} chunks")
+        if details:
+            lines.append("Indexed as: " + " · ".join(details))
+    lines.extend(["", "Confidence: High"])
+    return "\n".join(lines)
+
+
 def _group_local_sources_by_document(local_sources: Sequence[LocalSource]) -> dict[str, list[LocalSource]]:
     grouped: dict[str, list[LocalSource]] = {}
     for source in local_sources:
@@ -2901,6 +3033,11 @@ def _first_source_per_document(local_sources: Sequence[LocalSource]) -> list[Loc
 
 
 def _local_document_compact_summary(document: str, sources: Sequence[LocalSource]) -> str:
+    for source in sources:
+        metadata = source.metadata or {}
+        summary = str(metadata.get("document_level_summary") or "").strip()
+        if summary:
+            return _compact_source_text(summary, limit=700)
     text = _compact_source_text(" ".join(getattr(source, "text", "") for source in sources), limit=420)
     normalized = normalize_intent_text(f"{document} {text}")
     if "passport" in normalized:
@@ -2910,6 +3047,78 @@ def _local_document_compact_summary(document: str, sources: Sequence[LocalSource
     if "regression" in normalized or "stata" in normalized or "time series" in normalized:
         return "Course or exercise material about applied time series analysis and multiple regression modelling."
     return text or "Indexed local document content."
+
+
+def _local_document_topics(source: LocalSource, sources: Sequence[LocalSource]) -> str:
+    metadata = source.metadata or {}
+    keywords = metadata.get("document_keywords") or []
+    if isinstance(keywords, str):
+        keywords = [item.strip() for item in re.split(r"[,;|]", keywords) if item.strip()]
+    if keywords:
+        return ", ".join(str(keyword) for keyword in keywords[:6])
+    headings = _unique_nonempty(
+        str(item.metadata.get("section_heading") or "")
+        for item in sources
+        if getattr(item, "metadata", None)
+    )
+    return ", ".join(headings[:4])
+
+
+def _local_document_keywords(source: LocalSource) -> str:
+    metadata = source.metadata or {}
+    keywords = metadata.get("document_keywords") or metadata.get("keywords") or []
+    if isinstance(keywords, str):
+        keywords = [item.strip() for item in re.split(r"[,;|]", keywords) if item.strip()]
+    return ", ".join(str(keyword) for keyword in keywords[:8] if str(keyword).strip())
+
+
+def _document_metadata_matches_explicit_file(metadata, explicit_files: Sequence[str]) -> bool:
+    document = Path(str(getattr(metadata, "document", ""))).name.lower()
+    source_path = Path(str(getattr(metadata, "source_path", ""))).name.lower()
+    title = str(getattr(metadata, "title", "")).lower()
+    candidates = {document, source_path, Path(document).stem, Path(source_path).stem, title}
+    for file_name in explicit_files:
+        file_name = file_name.lower()
+        stem = Path(file_name).stem.lower()
+        if file_name in candidates or stem in candidates:
+            return True
+    return False
+
+
+def _document_metadata_source_text(metadata) -> str:
+    keywords = ", ".join(getattr(metadata, "keywords", [])[:12])
+    parts = [
+        f"Document: {getattr(metadata, 'title', '') or getattr(metadata, 'document', '')}",
+        f"File: {getattr(metadata, 'document', '')}",
+        f"Summary: {getattr(metadata, 'summary', '')}",
+    ]
+    if keywords:
+        parts.append(f"Keywords: {keywords}")
+    pages = int(getattr(metadata, "pages", 0) or 0)
+    chunks = int(getattr(metadata, "chunks", 0) or 0)
+    if pages or chunks:
+        parts.append(f"Indexed as: {pages} pages, {chunks} chunks")
+    return "\n".join(part for part in parts if part.split(":", maxsplit=1)[-1].strip())
+
+
+def _local_win_reasons(
+    question: str,
+    local_sources: Sequence[LocalSource],
+    settings: AppSettings,
+) -> list[str]:
+    reasons: list[str] = []
+    if _explicit_local_file_names(question):
+        reasons.append("exact filename match")
+    if any((source.metadata or {}).get("document_summary") for source in local_sources):
+        reasons.append("document-level summary metadata")
+    if local_sources:
+        reasons.append("local evidence available")
+    if not getattr(settings, "enable_web_search", True):
+        reasons.append("web disabled")
+    search_mode = str(getattr(settings, "search_mode", "") or "").lower()
+    if search_mode == "local only":
+        reasons.append("Local Only mode selected")
+    return _unique_nonempty(reasons)
 
 
 def _ensure_local_citation(answer: str, local_sources: Sequence[LocalSource]) -> str:
@@ -5859,7 +6068,15 @@ def _local_file_search_queries(query):
     explicit_files = _explicit_local_file_names(query)
     for file_name in explicit_files:
         stem = Path(file_name).stem.replace("_", " ").replace("-", " ")
-        queries.extend([file_name, Path(file_name).stem, stem])
+        queries.extend(
+            [
+                file_name,
+                Path(file_name).stem,
+                stem,
+                f"summarise document {file_name}",
+                f"document named {file_name}",
+            ]
+        )
         if cleaned and file_name not in cleaned.lower():
             queries.append(f"{cleaned} {file_name}")
     if _is_local_summary_request(query):

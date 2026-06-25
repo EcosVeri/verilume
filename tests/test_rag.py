@@ -1447,6 +1447,32 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(rag.web_search.queries, [])
 
+    def test_explicit_filename_summaries_uses_local_evidence(self) -> None:
+        dic_source = LocalSource(
+            label="S1",
+            document="dic.pdf",
+            page=1,
+            chunk_id="dic-1",
+            text="The uploaded dictionary file contains local terminology and definitions.",
+            score=0.9,
+        )
+        rag = self._make_rag(
+            local_answer="The dic.pdf document contains local terminology and definitions [S1].",
+            model_answer="Model answer that should not be used.",
+            local_sources=[dic_source],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("summaries dic.pdf")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("local terminology", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["dic.pdf"])
+        self.assertEqual(len(rag.generator.local_calls), 1)
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(rag.web_search.queries, [])
+
     def test_examples_from_local_files_uses_local_evidence(self) -> None:
         example_source = LocalSource(
             label="S1",

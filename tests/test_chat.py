@@ -76,7 +76,7 @@ class ChatInteractionTests(unittest.TestCase):
         ):
             placeholder = _chat_placeholder(AppSettings(search_mode="Local Only"))
 
-        self.assertEqual(placeholder, "📄 Local Only — Search local files...")
+        self.assertEqual(placeholder, "📄 Local Only  Search local files...")
 
     def test_partition_message_history_keeps_recent_messages_visible(self) -> None:
         archived_timestamp = (datetime.now().astimezone() - timedelta(days=4)).isoformat(

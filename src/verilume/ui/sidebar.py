@@ -36,8 +36,7 @@ def render_sidebar(
     stats: dict[str, int],
 ) -> SidebarState:
     with st.sidebar:
-        st.markdown('<div class="veri-sidebar-brand">VERILUME</div>', unsafe_allow_html=True)
-        st.markdown("### Verilume Studio")
+        st.markdown(_sidebar_status_html(stats), unsafe_allow_html=True)
 
         uploaded_files: list[Any] = []
         build_clicked = False
@@ -52,7 +51,7 @@ def render_sidebar(
 
         models_expanded = _section_expanded("models", default=False)
 
-        with st.expander("Models", expanded=models_expanded):
+        with st.expander("🧠 Models · Configure AI", expanded=models_expanded):
             backend_options = list(GENERATION_BACKEND_LABELS.keys())
             backend_labels = [GENERATION_BACKEND_LABELS[key] for key in backend_options]
 
@@ -81,7 +80,7 @@ def render_sidebar(
 
         search_expanded = _section_expanded("search", default=False)
 
-        with st.expander("Search", expanded=search_expanded):
+        with st.expander("🔎 Search · Choose sources", expanded=search_expanded):
             search_mode = st.radio(
                 "Search mode",
                 options=list(SEARCH_MODE_CHOICES),
@@ -95,11 +94,18 @@ def render_sidebar(
                 value=base_settings.enable_web_search,
             )
 
-            benchmark_mode = st.toggle(
-                "Benchmark Mode",
+            show_benchmark_controls = st.checkbox(
+                "Show benchmark controls",
                 value=base_settings.benchmark_mode,
-                help="Compare Full, Local Only, AI Only, and Web Only strategies for each question.",
+                help="Developer comparison mode for retrieval and generation strategies.",
             )
+            benchmark_mode = base_settings.benchmark_mode
+            if show_benchmark_controls:
+                benchmark_mode = st.toggle(
+                    "Benchmark mode",
+                    value=base_settings.benchmark_mode,
+                    help="Compare Full, Local Only, AI Only, and Web Only strategies.",
+                )
 
             provider_keys = list(WEB_SEARCH_PROVIDER_LABELS.keys())
             provider_labels = [WEB_SEARCH_PROVIDER_LABELS[key] for key in provider_keys]
@@ -147,15 +153,20 @@ def render_sidebar(
 
         docs_expanded = _section_expanded("documents", default=False)
 
-        with st.expander("Documents", expanded=docs_expanded):
+        with st.expander("📚 Knowledge Base · Upload + Browse", expanded=docs_expanded):
             st.markdown(
                 """
 <div class="veri-upload-info">
-  <strong>Build your knowledge base</strong><br><br>
-  <span>Supported</span><br>
-    PDF · Scanned PDF · DOCX · PPTX · Images · TXT · MD · CSV<br><br>
-  <span>Maximum size</span><br>
-  200 MB per file
+  <strong>Build your knowledge base</strong>
+  <div class="veri-upload-types">
+    <span>📄 PDF</span>
+    <span>📘 DOCX</span>
+    <span>📑 PPTX</span>
+    <span>📊 CSV</span>
+    <span>🖼 Images</span>
+    <span>✍ TXT / MD</span>
+  </div>
+  <div class="veri-upload-limit">Maximum size: 200 MB per file</div>
 </div>
                 """,
                 unsafe_allow_html=True,
@@ -169,21 +180,18 @@ def render_sidebar(
                 label_visibility="collapsed",
             )
 
-            col_a, col_b = st.columns(2)
-
-            with col_a:
-                build_clicked = st.button(
-                    "Build KB",
-                    use_container_width=True,
-                )
-
-            with col_b:
-                reset_clicked = st.button(
-                    "Reset DB",
-                    use_container_width=True,
-                )
+            build_clicked = st.button(
+                "🟨 Build Knowledge Base",
+                type="primary",
+                use_container_width=True,
+            )
+            reset_clicked = st.button(
+                "Reset DB",
+                use_container_width=True,
+            )
 
             existing_documents = removable_documents(base_settings.docs_dir)
+            _render_document_explorer(existing_documents)
             remove_documents_selected: list[str] = []
             if existing_documents:
                 remove_documents_selected = st.multiselect(
@@ -215,7 +223,7 @@ def render_sidebar(
 
         retrieval_expanded = _section_expanded("retrieval", default=False)
 
-        with st.expander("Retrieval", expanded=retrieval_expanded):
+        with st.expander("⚙ Retrieval · Ranking", expanded=retrieval_expanded):
             answer_style = st.radio(
                 "Answer style",
                 options=list(ANSWER_STYLE_CHOICES),
@@ -258,7 +266,7 @@ def render_sidebar(
 
         settings = base_settings.with_overrides(**overrides)
 
-        if st.button("Save settings", use_container_width=True):
+        if st.button("Save settings", type="primary", use_container_width=True):
             save_user_config(settings)
             st.success("Settings saved.")
             st.rerun()
@@ -280,6 +288,43 @@ def _section_expanded(section: str, default: bool) -> bool:
         return True
 
     return default
+
+
+def _sidebar_status_html(stats: dict[str, int]) -> str:
+    documents = int(stats.get("uploaded_documents", 0) or 0)
+    pages = int(stats.get("pdf_pages", 0) or 0)
+    chunks = int(stats.get("chunks_indexed", 0) or 0)
+    return (
+        '<div class="veri-sidebar-panel">'
+        '<div class="veri-sidebar-brandline">VERILUME</div>'
+        '<div class="veri-sidebar-title">Verilume Studio</div>'
+        '<div class="veri-sidebar-subtitle">Local-first AI Research Assistant</div>'
+        '<div class="veri-sidebar-version">Version 1.0</div>'
+        '<div class="veri-sidebar-status">'
+        f'<div class="veri-sidebar-stat"><span>📄</span><strong>{documents}</strong><em>Docs</em></div>'
+        f'<div class="veri-sidebar-stat"><span>📚</span><strong>{pages}</strong><em>Pages</em></div>'
+        f'<div class="veri-sidebar-stat"><span>🧩</span><strong>{chunks}</strong><em>Chunks</em></div>'
+        "</div>"
+        "</div>"
+    )
+
+
+def _render_document_explorer(documents: list[str]) -> None:
+    if not documents:
+        return
+    items = "".join(
+        f'<div class="veri-document-row"><span>📄</span><strong>{escape(document)}</strong></div>'
+        for document in documents[:6]
+    )
+    st.markdown(
+        f"""
+<div class="veri-document-explorer">
+  <div class="veri-document-explorer-title">Document Explorer</div>
+  {items}
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_huggingface_settings(base_settings: AppSettings) -> dict[str, Any]:

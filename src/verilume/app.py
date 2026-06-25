@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 
 import streamlit as st
 
-from verilume.ingest import DocumentIngestor, remove_documents, save_uploaded_file
+from verilume.ingest import DocumentIngestor, removable_documents, remove_documents, save_uploaded_file
 from verilume.rag import get_rag_service
 from verilume.settings import AppSettings, ensure_app_dirs
 from verilume.ui.chat import render_chat
@@ -44,6 +45,7 @@ def main() -> None:
     stats = _collect_document_stats_cached(sidebar.settings)
     render_header(sidebar.settings, stats)
     _render_metrics(stats)
+    _render_workspace_summary(sidebar.settings, stats)
     _render_empty_document_state(stats)
     render_chat(sidebar.settings)
 
@@ -166,10 +168,70 @@ def _collect_document_stats_cached(settings: AppSettings) -> dict[str, int]:
 
 
 def _render_metrics(stats: dict[str, int]) -> None:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Uploaded documents", stats.get("uploaded_documents", 0))
-    col2.metric("PDF pages", stats.get("pdf_pages", 0))
-    col3.metric("Chunks indexed", stats.get("chunks_indexed", 0))
+    cards = (
+        ("📄", stats.get("uploaded_documents", 0), "Documents"),
+        ("📚", stats.get("pdf_pages", 0), "Pages"),
+        ("🧩", stats.get("chunks_indexed", 0), "Chunks"),
+    )
+    rendered = "".join(
+        (
+            '<div class="veri-metric-card">'
+            f'<div class="veri-metric-icon">{icon}</div>'
+            f'<div class="veri-metric-value">{int(value or 0):,}</div>'
+            f'<div class="veri-metric-label">{label}</div>'
+            "</div>"
+        )
+        for icon, value, label in cards
+    )
+    st.markdown(f'<div class="veri-metric-grid">{rendered}</div>', unsafe_allow_html=True)
+
+
+def _render_workspace_summary(settings: AppSettings, stats: dict[str, int]) -> None:
+    documents = removable_documents(settings.docs_dir)
+    recent_docs = documents[-4:][::-1]
+    doc_items = "".join(
+        f'<div class="veri-mini-row"><span>📄</span><strong>{escape(name)}</strong></div>'
+        for name in recent_docs
+    ) or '<div class="veri-mini-muted">Upload documents to start building your local library.</div>'
+    messages = st.session_state.get("messages", [])
+    recent_questions = [
+        str(message.get("content", "")).strip()
+        for message in reversed(messages)
+        if message.get("role") == "user" and str(message.get("content", "")).strip()
+    ][:3]
+    activity_items = "".join(
+        f'<div class="veri-mini-row"><span>⌘</span><strong>{escape(item[:72])}</strong></div>'
+        for item in recent_questions
+    ) or '<div class="veri-mini-muted">Recent searches will appear here.</div>'
+    quick_prompts = (
+        "Summarise dic.pdf",
+        "List indexed documents",
+        "Compare local evidence",
+    )
+    prompt_items = "".join(f"<span>{escape(prompt)}</span>" for prompt in quick_prompts)
+    st.markdown(
+        f"""
+<div class="veri-workspace-grid">
+  <div class="veri-workspace-card">
+    <div class="veri-workspace-kicker">Recent Documents</div>
+    {doc_items}
+  </div>
+  <div class="veri-workspace-card">
+    <div class="veri-workspace-kicker">Recent Activity</div>
+    {activity_items}
+  </div>
+  <div class="veri-workspace-card">
+    <div class="veri-workspace-kicker">Suggested Prompts</div>
+    <div class="veri-prompt-chip-row">{prompt_items}</div>
+  </div>
+  <div class="veri-workspace-card">
+    <div class="veri-workspace-kicker">Shortcuts</div>
+    <div class="veri-shortcuts"><span>⌘K Search</span><span>⌘L Clear</span><span>⌘B Sidebar</span><span>⌘↵ Send</span></div>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_empty_document_state(stats: dict[str, int]) -> None:

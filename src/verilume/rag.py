@@ -2333,6 +2333,7 @@ class VerilumeRAG:
             "mentions",
             "number",
             "show",
+            "summaries",
             "summarise",
             "summarize",
             "summary",
@@ -2345,6 +2346,7 @@ class VerilumeRAG:
             for marker in (
                 "summarise",
                 "summarize",
+                "summaries",
                 "summary",
                 "explain",
                 "describe",
@@ -2363,8 +2365,8 @@ class VerilumeRAG:
         intent_patterns = (
             r"\b(?:how\s+many|number\s+of|count)\b.+\b(?:local|uploaded|indexed)\s+(?:file|files|document|documents|chunk|chunks)\b",
             r"\b(?:give|show|list)\b.+\b(?:example|examples)\b.+\b(?:local|uploaded|indexed)\s+(?:file|files|document|documents)\b",
-            r"\b(?:summari[sz]e|summary\s+of|describe|tell\s+me\s+about)\b.+\b[a-z0-9][a-z0-9._-]*\.(?:pdf|docx?|pptx|txt|md|csv)\b",
-            r"\b(?:summari[sz]e|summary\s+of|describe|list|show)\b.+\b(?:the\s+)?(?:file|files|document|documents)\b",
+            r"\b(?:summari[sz]e|summaries|summary\s+of|describe|tell\s+me\s+about)\b.+\b[a-z0-9][a-z0-9._-]*\.(?:pdf|docx?|pptx|txt|md|csv)\b",
+            r"\b(?:summari[sz]e|summaries|summary\s+of|describe|list|show)\b.+\b(?:the\s+)?(?:file|files|document|documents)\b",
             r"\bwhat(?:'s| is| are)\s+(?:the\s+)?(?:content|contents)\s+of\s+(?:the\s+)?(?:file|files|document|documents)\b",
             r"\b(?:do|does|did|is|are|any)\b.+\b(?:my|uploaded|indexed|local)\s+(?:file|files|document|documents)\b",
             r"\b(?:which|what)\s+(?:file|files|document|documents)\b",
@@ -2808,7 +2810,7 @@ def _is_local_summary_request(question: str) -> bool:
         return True
     if _explicit_local_file_names(question) and any(
         marker in normalized
-        for marker in ("summarise", "summarize", "summary", "describe", "tell me about")
+        for marker in ("summarise", "summarize", "summaries", "summary", "describe", "tell me about")
     ):
         return True
     return any(
@@ -2841,7 +2843,7 @@ def _is_local_corpus_overview_request(question: str) -> bool:
         r"|\bknowledge\s+base\b|\bdata\s*base\b"
     )
     action_patterns = (
-        r"\b(?:summari[sz]e|summary\s+of|describe|list|show)\b",
+        r"\b(?:summari[sz]e|summaries|summary\s+of|describe|list|show)\b",
         r"\b(?:content|contents)\s+of\b",
         r"\bwhat(?:'s| is| are)\s+(?:the\s+)?(?:content|contents|inside)\b",
         r"\bwhat(?:'s| is)\s+in\s+(?:the\s+)?(?:file|files|document|documents)\b",
@@ -2852,8 +2854,8 @@ def _is_local_corpus_overview_request(question: str) -> bool:
         return True
     return bool(
         re.search(
-            r"\b(?:files|documents)\b.+\b(?:summari[sz]e|summary|content|contents)\b"
-            r"|\b(?:docs)\b.+\b(?:summari[sz]e|summary|content|contents)\b"
+            r"\b(?:files|documents)\b.+\b(?:summari[sz]e|summaries|summary|content|contents)\b"
+            r"|\b(?:docs)\b.+\b(?:summari[sz]e|summaries|summary|content|contents)\b"
             r"|\b(?:content|contents)\s+of\s+(?:files|documents|docs)\b",
             normalized,
         )

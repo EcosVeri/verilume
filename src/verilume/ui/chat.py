@@ -36,8 +36,8 @@ USER_ICON = ":material/account_circle:"
 ASSISTANT_ICON = ":material/auto_awesome:"
 ANSWER_HEADER = "Verilume Findings"
 EVIDENCE_HEADER = "Evidence Analysis"
-LOCAL_SOURCES_HEADER = "Document Citations"
-WEB_SOURCES_HEADER = "Web Evidence"
+LOCAL_SOURCES_HEADER = "📄 Local"
+WEB_SOURCES_HEADER = "🌍 Web"
 CHAT_PLACEHOLDER_EXAMPLES = (
     "Ask about your documents...",
     "Search local files...",
@@ -86,7 +86,11 @@ def render_chat(settings: AppSettings) -> None:
         _generate_assistant_response(settings, regenerate_prompt)
         return
 
-    prompt = st.chat_input(_chat_placeholder(settings))
+    suggested_prompt = None
+    if not st.session_state.messages:
+        suggested_prompt = _render_welcome_screen()
+
+    prompt = suggested_prompt or st.chat_input(_chat_placeholder(settings))
     if not prompt:
         return
 
@@ -106,30 +110,30 @@ def _chat_placeholder(settings: AppSettings) -> str:
         st.session_state.get("chat_placeholder_example")
         or random.choice(CHAT_PLACEHOLDER_EXAMPLES)
     )
-    return f"{icon} {mode} — {example}"
+    return f"{icon} {mode}  {example}"
 
 
 def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
     history = _history_from_messages(st.session_state.messages[:-1])
     with st.chat_message("assistant", avatar=ASSISTANT_ICON):
         placeholder = st.empty()
+        stage_placeholder = st.empty()
         st.session_state.generating = True
         st.session_state.stop_requested = False
         try:
-            with st.status("Evidence collection", expanded=False) as status:
+            def update_stage(label: str) -> None:
+                stage_placeholder.markdown(_loading_stage_html(label), unsafe_allow_html=True)
 
-                def update_stage(label: str) -> None:
-                    status.write(label)
-
-                response = get_rag_service(settings).ask(
-                    prompt,
-                    history,
-                    conversation_state=st.session_state.conversation_state,
-                    should_stop=lambda: st.session_state.stop_requested,
-                    on_stage=update_stage,
-                )
-                status.update(label="Evidence collection complete", state="complete")
+            update_stage("Searching local evidence...")
+            response = get_rag_service(settings).ask(
+                prompt,
+                history,
+                conversation_state=st.session_state.conversation_state,
+                should_stop=lambda: st.session_state.stop_requested,
+                on_stage=update_stage,
+            )
             placeholder.empty()
+            stage_placeholder.empty()
             assistant_message = {
                 "role": "assistant",
                 "content": response.answer,
@@ -151,6 +155,7 @@ def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
                 "timestamp": _now_timestamp(),
             }
             placeholder.empty()
+            stage_placeholder.empty()
             _render_assistant_meta(assistant_message, len(st.session_state.messages))
             st.markdown(message)
             st.session_state.messages.append(assistant_message)
@@ -166,6 +171,7 @@ def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
                 "timestamp": _now_timestamp(),
             }
             placeholder.empty()
+            stage_placeholder.empty()
             _render_assistant_meta(assistant_message, len(st.session_state.messages))
             st.markdown(message)
             st.session_state.messages.append(assistant_message)
@@ -177,7 +183,11 @@ def _render_toolbar(settings: AppSettings) -> None:
     can_regenerate = _latest_user_index(st.session_state.messages) is not None
     col_a, col_b, col_c, col_d, col_e = st.columns([1.1, 1.2, 0.8, 1, 2])
     with col_a:
-        if st.button("\u23f9 Stop response", use_container_width=True):
+        if st.button(
+            "\u23f9 Stop response",
+            disabled=not st.session_state.generating,
+            use_container_width=True,
+        ):
             st.session_state.stop_requested = True
             if st.session_state.generating:
                 st.warning("Stop requested. The current provider call will finish this turn.")
@@ -221,6 +231,66 @@ def _render_toolbar(settings: AppSettings) -> None:
                 disabled=True,
                 use_container_width=True,
             )
+
+
+def _render_welcome_screen() -> str | None:
+    st.markdown(
+        """
+<div class="veri-welcome">
+  <div class="veri-welcome-kicker">Welcome</div>
+  <div class="veri-welcome-title">Search documents, research sources, and compare evidence.</div>
+  <div class="veri-welcome-grid">
+    <div><strong>📄 Search documents</strong><span>Find local facts and citations.</span></div>
+    <div><strong>📚 Summarise files</strong><span>Turn long PDFs into clear briefs.</span></div>
+    <div><strong>⚖ Compare evidence</strong><span>Separate local, AI, and web support.</span></div>
+    <div><strong>🌍 Current facts</strong><span>Use web sources when enabled.</span></div>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    prompts = (
+        "List indexed documents",
+        "Summarise dic.pdf",
+        "Compare local and web evidence",
+        "What changed in my latest upload?",
+    )
+    cols = st.columns(4)
+    for index, (col, prompt) in enumerate(zip(cols, prompts, strict=True), start=1):
+        with col:
+            if st.button(prompt, key=f"welcome-prompt-{index}", use_container_width=True):
+                return prompt
+    return None
+
+
+def _loading_stage_html(label: str) -> str:
+    current = _loading_stage_index(label)
+    steps = ("Searching Local", "Searching Web", "Ranking", "Generating")
+    rendered_steps = "".join(
+        (
+            f'<div class="veri-loading-step {"active" if index == current else "done" if index < current else ""}">'
+            f"<span>{escape(step)}</span><i></i>"
+            "</div>"
+        )
+        for index, step in enumerate(steps)
+    )
+    return f"""
+<div class="veri-loading-panel">
+  <div class="veri-loading-label">{escape(label)}</div>
+  <div class="veri-loading-steps">{rendered_steps}</div>
+</div>
+    """
+
+
+def _loading_stage_index(label: str) -> int:
+    normalized = (label or "").lower()
+    if "web" in normalized:
+        return 1
+    if "rank" in normalized or "evidence" in normalized or "verif" in normalized:
+        return 2
+    if "generat" in normalized or "synthesis" in normalized or "answer" in normalized:
+        return 3
+    return 0
 
 
 def _render_message(
@@ -609,10 +679,34 @@ def _friendly_token(value: str) -> str:
 
 
 def _render_local_sources_table(response: RAGResponse) -> None:
-    st.dataframe(
-        local_source_rows(response.local_sources),
-        use_container_width=True,
-        hide_index=True,
+    cards = []
+    for row in local_source_rows(response.local_sources):
+        cards.append(
+            """
+<div class="veri-source-card">
+  <div class="veri-source-card-top">
+    <div class="veri-source-card-title"><span>📄</span>{document}</div>
+    <div class="veri-source-card-badge">{citation}</div>
+  </div>
+  <div class="veri-source-card-meta">
+    <span>{page}</span>
+    <span>Confidence: {confidence}</span>
+    <span>Score: {score}</span>
+  </div>
+  <div class="veri-source-card-preview">{preview}</div>
+</div>
+            """.format(
+                citation=escape(str(row.get("Citation", ""))),
+                confidence=escape(str(row.get("Confidence", ""))),
+                document=escape(str(row.get("Document", ""))),
+                page=escape(str(row.get("Page", ""))),
+                preview=escape(str(row.get("Preview", ""))),
+                score=escape(str(row.get("Score", ""))),
+            )
+        )
+    st.markdown(
+        f'<div class="veri-source-card-grid">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -620,15 +714,53 @@ def _render_web_source_groups(response: RAGResponse) -> None:
     for group_title, grouped_sources in _group_web_source_rows(
         web_source_rows(response.web_sources)
     ):
-        st.markdown(f"**{group_title}**")
+        st.markdown(
+            f'<div class="veri-source-group-heading">{escape(group_title)}</div>',
+            unsafe_allow_html=True,
+        )
+        cards = []
         for source in grouped_sources:
-            preview = str(source["Preview"] or "").strip()
-            preview_line = f"  \n  {preview}" if preview else ""
-            st.markdown(
-                f"- [{source['Source']}]({source['URL']}) "
-                f"· Confidence: **{source['Confidence']}**"
-                f"{preview_line}"
+            cards.append(
+                _web_source_card_html(
+                    badge=str(source.get("Badge") or ""),
+                    citation=str(source.get("Citation") or ""),
+                    confidence=str(source.get("Confidence") or ""),
+                    preview=str(source.get("Preview") or ""),
+                    source=str(source.get("Source") or ""),
+                    url=str(source.get("URL") or ""),
+                )
             )
+        st.markdown(
+            f'<div class="veri-source-card-grid">{"".join(cards)}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _web_source_card_html(
+    *,
+    badge: str,
+    citation: str,
+    confidence: str,
+    preview: str,
+    source: str,
+    url: str,
+) -> str:
+    icon = badge.split(" ", maxsplit=1)[0] if badge else "🌍"
+    safe_url = escape(url, quote=True)
+    safe_source = escape(source or url or "Web source")
+    return f"""
+<div class="veri-source-card">
+  <div class="veri-source-card-top">
+    <a class="veri-source-card-title" href="{safe_url}" target="_blank" rel="noopener noreferrer"><span>{escape(icon)}</span>{safe_source}</a>
+    <div class="veri-source-card-badge">{escape(citation)}</div>
+  </div>
+  <div class="veri-source-card-meta">
+    <span>Confidence: {escape(confidence)}</span>
+    <span>{escape(url)}</span>
+  </div>
+  <div class="veri-source-card-preview">{escape(preview)}</div>
+</div>
+    """
 
 
 def _group_web_source_rows(
@@ -898,17 +1030,32 @@ def _is_conversational_response(answer: str) -> bool:
 def _render_copy_answer_button(answer: str, index: int) -> None:
     button_id = f"copy-answer-{index}"
     html = f"""
-<button id="{button_id}" style="
-  background:#1a1f27;
-  border:1px solid #2b303a;
-  border-radius:10px;
-  color:#f5f2e8;
-  cursor:pointer;
-  font:600 13px system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  min-height:32px;
-  padding:0 12px;
-  width:100%;
-">Copy answer</button>
+<style>
+html, body {{
+  background: transparent;
+  margin: 0;
+}}
+
+button {{
+  background: rgba(54, 209, 196, .10);
+  border: 1px solid rgba(54, 209, 196, .42);
+  border-radius: 8px;
+  color: #36d1c4;
+  cursor: pointer;
+  font: 700 13px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  min-height: 32px;
+  padding: 0 12px;
+  transition: border-color .16s ease, color .16s ease, transform .16s ease;
+  width: 100%;
+}}
+
+button:hover {{
+  border-color: rgba(255, 200, 87, .72);
+  color: #ffc857;
+  transform: translateY(-1px);
+}}
+</style>
+<button id="{button_id}">Copy answer</button>
 <script>
 const button = document.getElementById({json.dumps(button_id)});
 const answer = {json.dumps(answer)};

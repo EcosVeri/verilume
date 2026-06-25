@@ -156,6 +156,16 @@ SEARCH_MODE_ALIASES = {
     "research mode": "Research Mode",
 }
 
+APPEARANCE_CHOICES = ("dark", "light")
+APPEARANCE_ALIASES = {
+    "dark": "dark",
+    "night": "dark",
+    "moon": "dark",
+    "light": "light",
+    "day": "light",
+    "sun": "light",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class AnswerStyleProfile:
@@ -319,6 +329,11 @@ def normalize_search_mode(mode: str) -> str:
     return SEARCH_MODE_ALIASES.get(key, SEARCH_MODE_ALIASES.get(raw, "Auto"))
 
 
+def normalize_appearance(appearance: str) -> str:
+    key = (appearance or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return APPEARANCE_ALIASES.get(key, "dark")
+
+
 # ############################################################
 # Save local user config
 # ############################################################
@@ -399,6 +414,7 @@ def _saved_config_values(
         "MULTIMODAL_STORE_PATH": settings.multimodal_store_path,
         "BENCHMARK_MODE": settings.benchmark_mode,
         # Retrieval and UI
+        "VERILUME_APPEARANCE": settings.appearance,
         "SHOW_LOCAL_SOURCES": settings.show_local_sources,
         "ANSWER_STYLE": settings.answer_style,
         "SEARCH_MODE": settings.search_mode,
@@ -445,6 +461,7 @@ class AppSettings:
     show_local_sources: bool = True
     answer_style: str = "Standard"
     search_mode: str = "Auto"
+    appearance: str = "dark"
 
     # Storage
     docs_dir: Path = DATA_HOME / "documents"
@@ -621,6 +638,11 @@ class AppSettings:
             self,
             "search_mode",
             normalize_search_mode(str(self.search_mode)),
+        )
+        object.__setattr__(
+            self,
+            "appearance",
+            normalize_appearance(str(self.appearance)),
         )
 
         object.__setattr__(
@@ -958,6 +980,10 @@ class AppSettings:
             search_mode=os.getenv(
                 "SEARCH_MODE",
                 defaults.search_mode,
+            ),
+            appearance=os.getenv(
+                "VERILUME_APPEARANCE",
+                defaults.appearance,
             ),
             # Storage
             docs_dir=_path("DOCS_DIR", defaults.docs_dir),

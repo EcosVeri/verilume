@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
+import socket
 import subprocess
 import sys
+import time
 from dataclasses import asdict
 from importlib.resources import files
 from pathlib import Path
@@ -19,6 +23,8 @@ from verilume.utils.logging import configure_logging
 STREAMLIT_HOST = "127.0.0.1"
 STREAMLIT_BROWSER_ADDRESS = "localhost"
 STREAMLIT_PORT = 8511
+STREAMLIT_PORT_ENV = "VERILUME_PORT"
+STREAMLIT_PORT_ATTEMPTS = 3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_streamlit() -> int:
     app_path = files("verilume").joinpath("app.py")
-    streamlit_args = _streamlit_cli_args(app_path)
+    streamlit_args = _streamlit_cli_args(app_path, port=_resolve_streamlit_port())
     if getattr(sys, "frozen", False):
         _patch_streamlit_for_frozen_bundle()
 
@@ -89,14 +95,14 @@ def run_streamlit() -> int:
         return 130
 
 
-def _streamlit_cli_args(app_path: object) -> list[str]:
+def _streamlit_cli_args(app_path: object, *, port: int = STREAMLIT_PORT) -> list[str]:
     return [
         "run",
         str(app_path),
         "--server.address",
         STREAMLIT_HOST,
         "--server.port",
-        str(STREAMLIT_PORT),
+        str(port),
         "--browser.serverAddress",
         STREAMLIT_BROWSER_ADDRESS,
         "--server.fileWatcherType",
@@ -104,6 +110,126 @@ def _streamlit_cli_args(app_path: object) -> list[str]:
         "--browser.gatherUsageStats",
         "false",
     ]
+
+
+def _resolve_streamlit_port() -> int:
+    configured = os.environ.get(STREAMLIT_PORT_ENV, "").strip()
+    if configured:
+        try:
+            return int(configured)
+        except ValueError:
+            print(
+                f"Ignoring invalid {STREAMLIT_PORT_ENV}={configured!r}; "
+                f"using an available port from {STREAMLIT_PORT}.",
+                file=sys.stderr,
+            )
+    available_port = _first_available_port(
+        STREAMLIT_HOST,
+        STREAMLIT_PORT,
+        attempts=STREAMLIT_PORT_ATTEMPTS,
+    )
+    if available_port is not None:
+        return available_port
+    return _force_reclaim_streamlit_port(STREAMLIT_HOST, STREAMLIT_PORT)
+
+
+def _first_available_port(host: str, start_port: int, *, attempts: int = 20) -> int | None:
+    for port in range(start_port, start_port + max(1, attempts)):
+        if _port_is_available(host, port):
+            return port
+    return None
+
+
+def _port_is_available(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _force_reclaim_streamlit_port(host: str, port: int) -> int:
+    pids = _listening_pids(port)
+    if not pids:
+        print(
+            f"Ports {STREAMLIT_PORT}-{STREAMLIT_PORT + STREAMLIT_PORT_ATTEMPTS - 1} "
+            f"are busy; forcing Verilume to try port {port}.",
+            file=sys.stderr,
+        )
+        return port
+
+    pid_list = ", ".join(str(pid) for pid in pids)
+    print(
+        f"Ports {STREAMLIT_PORT}-{STREAMLIT_PORT + STREAMLIT_PORT_ATTEMPTS - 1} "
+        f"are busy. Stopping process(es) {pid_list} on port {port} so Verilume can launch.",
+        file=sys.stderr,
+    )
+    _terminate_processes(pids)
+    if not _wait_for_port(host, port, available=True, timeout_seconds=5.0):
+        print(
+            f"Port {port} did not release after SIGTERM; forcing shutdown for process(es) {pid_list}.",
+            file=sys.stderr,
+        )
+        _kill_processes(pids)
+        _wait_for_port(host, port, available=True, timeout_seconds=3.0)
+    return port
+
+
+def _listening_pids(port: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    pids: list[int] = []
+    for line in result.stdout.splitlines():
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            continue
+    current_pid = os.getpid()
+    return [pid for pid in pids if pid != current_pid]
+
+
+def _terminate_processes(pids: list[int]) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError as exc:
+            print(f"Could not stop process {pid}: {exc}", file=sys.stderr)
+
+
+def _kill_processes(pids: list[int]) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+        except PermissionError as exc:
+            print(f"Could not force-stop process {pid}: {exc}", file=sys.stderr)
+
+
+def _wait_for_port(
+    host: str,
+    port: int,
+    *,
+    available: bool,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while time.monotonic() <= deadline:
+        if _port_is_available(host, port) is available:
+            return True
+        time.sleep(0.1)
+    return _port_is_available(host, port) is available
 
 
 def _patch_streamlit_for_frozen_bundle() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from verilume.settings import AppSettings
+from verilume.settings import AppSettings, save_user_config
 
 
 def render_header(settings: AppSettings, stats: dict[str, int]) -> None:
@@ -15,8 +15,10 @@ def render_header(settings: AppSettings, stats: dict[str, int]) -> None:
     else:
         web_state = f"{settings.web_search_provider_label()} setup needed"
     token_state = "HF ready" if settings.hf_token else "HF token needed"
-    st.markdown(
-        f"""
+    header_col, toggle_col = st.columns([0.88, 0.12], vertical_alignment="top")
+    with header_col:
+        st.markdown(
+            f"""
 <div class="veri-header">
   <div class="veri-brand">Verilume</div>
   <div class="veri-title">{settings.app_icon} {settings.app_title}</div>
@@ -29,5 +31,21 @@ def render_header(settings: AppSettings, stats: dict[str, int]) -> None:
   </div>
 </div>
         """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
+    with toggle_col:
+        render_theme_toggle(settings)
+
+
+def render_theme_toggle(settings: AppSettings) -> AppSettings:
+    current = settings.appearance or "dark"
+    next_appearance = "light" if current == "dark" else "dark"
+    icon = "☀️" if current == "dark" else "🌙"
+    label = "Switch to light mode" if current == "dark" else "Switch to dark mode"
+    st.markdown('<div class="veri-theme-toggle-wrap">', unsafe_allow_html=True)
+    if st.button(icon, help=label, key="appearance_toggle"):
+        updated = settings.with_overrides(appearance=next_appearance)
+        save_user_config(updated)
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+    return settings

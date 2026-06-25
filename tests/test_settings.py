@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from verilume.core.generation import HuggingFaceGenerator, OllamaGenerator, create_generator
-from verilume.settings import AppSettings, normalize_search_mode, save_user_config
+from verilume.settings import AppSettings, normalize_appearance, normalize_search_mode, save_user_config
 
 
 class AppSettingsTests(unittest.TestCase):
@@ -77,12 +77,19 @@ class AppSettingsTests(unittest.TestCase):
         self.assertEqual(settings.confidence_medium_threshold, 0.0)
         self.assertEqual(settings.answer_style, "Research")
         self.assertEqual(settings.search_mode, "Local + AI + Web")
+        self.assertEqual(settings.appearance, "dark")
 
     def test_search_mode_aliases_are_normalized(self) -> None:
         self.assertEqual(normalize_search_mode("web only"), "Web Only")
         self.assertEqual(normalize_search_mode("research_mode"), "Research Mode")
         self.assertEqual(normalize_search_mode("local + ai"), "Local + AI")
         self.assertEqual(normalize_search_mode("unknown"), "Auto")
+
+    def test_appearance_aliases_are_normalized(self) -> None:
+        self.assertEqual(normalize_appearance("light"), "light")
+        self.assertEqual(normalize_appearance("day"), "light")
+        self.assertEqual(normalize_appearance("dark"), "dark")
+        self.assertEqual(normalize_appearance("unknown"), "dark")
 
     def test_web_provider_secrets_are_masked(self) -> None:
         settings = AppSettings(
@@ -118,6 +125,7 @@ class AppSettingsTests(unittest.TestCase):
                     brave_api_key="brave-secret",
                     answer_style="short",
                     search_mode="web only",
+                    appearance="light",
                 ),
                 path=path,
             )
@@ -130,6 +138,7 @@ class AppSettingsTests(unittest.TestCase):
         self.assertIn('BRAVE_API_KEY="brave-secret"', content)
         self.assertIn('ANSWER_STYLE="Short"', content)
         self.assertIn('SEARCH_MODE="Web Only"', content)
+        self.assertIn('VERILUME_APPEARANCE="light"', content)
 
     def test_hugging_face_backend_is_selected(self) -> None:
         settings = AppSettings(

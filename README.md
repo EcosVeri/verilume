@@ -28,6 +28,7 @@ It is designed to answer questions like:
 - Configurable web search providers
 - Evidence ranking and source confidence
 - Separate local and web citations
+- Persistent dark/light appearance toggle
 - Conversation-aware query rewriting
 - Markdown and PDF chat export
 - Streamlit desktop interface
@@ -64,6 +65,11 @@ Then open the local Streamlit URL shown in the terminal, usually:
 ```text
 http://localhost:8511
 ```
+
+If that port is already in use, Verilume automatically tries `8512`, then
+`8513`. If all three preferred ports are busy, it prints a message and reclaims
+`8511` for the new launch. To force a specific port, set `VERILUME_PORT` before
+launching.
 
 On macOS, you can also double-click:
 
@@ -119,6 +125,7 @@ Verilume answers with a local-first weighting strategy:
 10. If web search is disabled and local files do not answer, Verilume may answer from AI Knowledge, clearly marked as not externally verified.
 11. Show colored answer-origin badges for Local Retrieval, Web Search, AI Knowledge, Hybrid, or Current Information.
 12. Show local `[S1]`, `[S2]` citations separately from grouped, clickable web source lists.
+13. Switch between the default dark appearance and a light readable appearance from the header toggle. The choice is saved immediately and restored after restart.
 
 If the selected Hugging Face model is out of capacity, overloaded, unavailable, unsupported by the current provider, or incompatible with the token, the app shows a warning and asks you to select another sidebar model or enter a compatible custom model ID.
 
@@ -128,6 +135,13 @@ Copy `.env.example` to `.env` and adjust values as needed:
 
 ```bash
 cp .env.example .env
+```
+
+Appearance can also be set directly:
+
+```bash
+VERILUME_APPEARANCE=dark
+VERILUME_APPEARANCE=light
 ```
 
 By default, local user data is stored under:

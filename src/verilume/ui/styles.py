@@ -5,33 +5,103 @@ from __future__ import annotations
 import streamlit as st
 
 
-def inject_styles() -> None:
-    st.markdown(
-        """
+def inject_styles(appearance: str = "dark") -> None:
+    theme = _theme_tokens(appearance)
+    css = """
 <style>
 :root {
-  --veri-bg: #0b0d10;
-  --veri-panel: #14171d;
-  --veri-panel-2: #191d24;
-  --veri-line: #2b303a;
-  --veri-text: #f5f2e8;
-  --veri-muted: #9ca6b5;
-  --veri-amber: #ffc857;
-  --veri-teal: #36d1c4;
-  --veri-coral: #ff6b5f;
-  --veri-green: #7bd88f;
+__THEME_VARIABLES__
 }
 
 .stApp {
   background:
-    linear-gradient(180deg, rgba(255, 200, 87, 0.08) 0%, rgba(11, 13, 16, 0) 280px),
+    __APP_GRADIENT__,
     var(--veri-bg);
   color: var(--veri-text);
 }
+"""
+    css += _BASE_CSS
+    css = css.replace("__THEME_VARIABLES__", theme["variables"])
+    css = css.replace("__APP_GRADIENT__", theme["app_gradient"])
+    st.markdown(
+        css,
+        unsafe_allow_html=True,
+    )
+
+
+def _theme_tokens(appearance: str) -> dict[str, str]:
+    normalized = "light" if str(appearance or "").strip().lower() == "light" else "dark"
+    if normalized == "light":
+        tokens = {
+            "veri-bg": "#f8f9fb",
+            "veri-panel": "#ffffff",
+            "veri-panel-2": "#f3f5f8",
+            "veri-sidebar": "#f3f5f8",
+            "veri-line": "#d9dee6",
+            "veri-text": "#1c2430",
+            "veri-muted": "#556070",
+            "veri-input-bg": "#ffffff",
+            "veri-input-text": "#1c2430",
+            "veri-header-bg": "linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,249,251,.94))",
+            "veri-bottom-bg": (
+                "linear-gradient(180deg, rgba(248,249,251,0), rgba(248,249,251,.96) 28%), "
+                "rgba(248,249,251,.96)"
+            ),
+            "veri-card-soft": "rgba(255,255,255,.84)",
+            "veri-track": "rgba(217,222,230,.88)",
+            "veri-amber": "#c78a1a",
+            "veri-teal": "#0066cc",
+            "veri-coral": "#d94b3d",
+            "veri-green": "#2d9d44",
+            "veri-button-text": "#1c2430",
+            "veri-primary-text": "#ffffff",
+            "veri-local-text": "#176b34",
+            "veri-web-text": "#075ba8",
+            "veri-ai-text": "#6540a0",
+            "veri-amber-text": "#825400",
+            "veri-evidence-text": "#9f2f24",
+        }
+        gradient = "linear-gradient(180deg, rgba(199, 138, 26, 0.08) 0%, rgba(248, 249, 251, 0) 280px)"
+    else:
+        tokens = {
+            "veri-bg": "#0b0d10",
+            "veri-panel": "#14171d",
+            "veri-panel-2": "#191d24",
+            "veri-sidebar": "#101319",
+            "veri-line": "#2b303a",
+            "veri-text": "#f5f2e8",
+            "veri-muted": "#9ca6b5",
+            "veri-input-bg": "#12161c",
+            "veri-input-text": "#f5f2e8",
+            "veri-header-bg": "linear-gradient(180deg, rgba(14, 15, 17, .98), rgba(14, 15, 17, .92))",
+            "veri-bottom-bg": (
+                "linear-gradient(180deg, rgba(11, 13, 16, 0), rgba(11, 13, 16, .96) 28%), "
+                "rgba(11, 13, 16, .96)"
+            ),
+            "veri-card-soft": "rgba(20, 23, 29, .78)",
+            "veri-track": "rgba(43, 48, 58, .78)",
+            "veri-amber": "#ffc857",
+            "veri-teal": "#36d1c4",
+            "veri-coral": "#ff6b5f",
+            "veri-green": "#7bd88f",
+            "veri-button-text": "#f5f2e8",
+            "veri-primary-text": "#101319",
+            "veri-local-text": "#b9f3c5",
+            "veri-web-text": "#b9d9ff",
+            "veri-ai-text": "#dcc8ff",
+            "veri-amber-text": "#ffe3a3",
+            "veri-evidence-text": "#ffc7c2",
+        }
+        gradient = "linear-gradient(180deg, rgba(255, 200, 87, 0.08) 0%, rgba(11, 13, 16, 0) 280px)"
+    variables = "\n".join(f"  --{name}: {value};" for name, value in tokens.items())
+    return {"variables": variables, "app_gradient": gradient}
+
+
+_BASE_CSS = """
 
 [data-testid="stSidebar"] {
-  background: #101319;
-  border-right: 1px solid var(--veri-line);
+  background: var(--veri-sidebar) !important;
+  border-right: 1px solid var(--veri-line) !important;
   min-width: 320px;
   max-width: 320px;
 }
@@ -61,11 +131,30 @@ h1, h2, h3 {
   position: sticky;
   top: 2.8rem;
   z-index: 20;
-  background: linear-gradient(180deg, rgba(14, 15, 17, .98), rgba(14, 15, 17, .92));
+  background: var(--veri-header-bg);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--veri-line);
   padding: .75rem 0 1.1rem 0;
   margin-bottom: 1rem;
+}
+
+.veri-theme-toggle-wrap {
+  margin-top: .7rem;
+  text-align: right;
+}
+
+.veri-theme-toggle-wrap + div button,
+.veri-theme-toggle-wrap + div [data-testid="baseButton-secondary"] {
+  background: var(--veri-panel-2) !important;
+  border: 1px solid var(--veri-line) !important;
+  border-radius: 999px !important;
+  color: var(--veri-text) !important;
+  min-height: 2.3rem !important;
+  min-width: 2.6rem !important;
+}
+
+button[kind="secondary"][data-testid="baseButton-secondary"] {
+  color: var(--veri-text) !important;
 }
 
 .veri-brand,
@@ -82,7 +171,7 @@ h1, h2, h3 {
   position: sticky;
   top: .75rem;
   z-index: 10;
-  background: #101319;
+  background: var(--veri-sidebar);
   padding: .35rem 0 1rem 0;
   margin-bottom: .35rem;
 }
@@ -90,7 +179,7 @@ h1, h2, h3 {
 [data-testid="stSidebar"] [data-testid="stExpander"] {
   border: 1px solid var(--veri-line);
   border-radius: 12px;
-  background: rgba(20, 23, 29, 0.92);
+  background: var(--veri-panel) !important;
   overflow: hidden;
 }
 
@@ -99,8 +188,8 @@ h1, h2, h3 {
 }
 
 [data-testid="stSidebar"] [data-testid="stExpander"] summary {
-  background: rgba(26, 31, 39, 0.9);
-  border-bottom: 1px solid rgba(43, 48, 58, 0.65);
+  background: var(--veri-panel-2) !important;
+  border-bottom: 1px solid var(--veri-line);
   font-weight: 700;
 }
 
@@ -112,7 +201,7 @@ h1, h2, h3 {
   border: 1px solid rgba(54, 209, 196, .34);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(54, 209, 196, .12), rgba(20, 23, 29, .92));
+    linear-gradient(180deg, rgba(54, 209, 196, .12), var(--veri-panel));
   margin: .75rem 0 .25rem 0;
   padding: .68rem .72rem;
 }
@@ -163,7 +252,7 @@ h1, h2, h3 {
   align-items: center;
   gap: .4rem;
   border: 1px solid var(--veri-line);
-  background: rgba(20, 23, 29, 0.88);
+  background: var(--veri-panel-2);
   border-radius: 999px;
   padding: .34rem .62rem;
   font-size: .78rem;
@@ -182,53 +271,67 @@ h1, h2, h3 {
 .veri-dot.green { background: var(--veri-green); }
 
 [data-testid="stMetric"] {
-  background: var(--veri-panel);
-  border: 1px solid var(--veri-line);
+  background: var(--veri-panel) !important;
+  border: 1px solid var(--veri-line) !important;
   border-radius: 8px;
   padding: .8rem .9rem;
 }
 
 [data-testid="stMetricLabel"] {
-  color: var(--veri-muted);
+  color: var(--veri-muted) !important;
 }
 
 [data-testid="stMetricValue"] {
-  color: var(--veri-text);
+  color: var(--veri-text) !important;
   font-size: 1.35rem;
 }
 
 [data-testid="stChatMessage"] {
-  background: rgba(20, 23, 29, 0.78);
-  border: 1px solid rgba(43, 48, 58, 0.85);
+  background: var(--veri-card-soft) !important;
+  border: 1px solid var(--veri-line) !important;
   border-radius: 8px;
   overflow: hidden;
   width: 100%;
 }
 
 [data-testid="stChatMessage"] p {
-  color: var(--veri-text);
+  color: var(--veri-text) !important;
 }
 
 [data-testid="stChatMessageContent"],
-[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] {
   max-width: none !important;
+  color: var(--veri-text) !important;
 }
 
 [data-testid="stChatInput"] {
+  background: var(--veri-input-bg) !important;
+  border: 1px solid var(--veri-line) !important;
+  border-radius: 999px !important;
   margin-left: auto;
   margin-right: auto;
   max-width: 1120px;
+  transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
   width: calc(100vw - 380px);
 }
 
+[data-testid="stChatInput"]:hover,
+[data-testid="stChatInput"]:focus-within {
+  border-color: var(--veri-amber) !important;
+}
+
+[data-testid="stChatInput"]:focus-within {
+  box-shadow: 0 0 0 3px rgba(255, 200, 87, .14) !important;
+}
+
 [data-testid="stBottom"] {
-  background:
-    linear-gradient(180deg, rgba(11, 13, 16, 0), rgba(11, 13, 16, .96) 28%),
-    rgba(11, 13, 16, .96);
-  border-top: 1px solid rgba(43, 48, 58, .75);
+  background: var(--veri-input-bg) !important;
+  border-top: 0;
 }
 
 [data-testid="stBottom"] > div {
+  background: var(--veri-input-bg) !important;
   margin-left: auto !important;
   margin-right: auto !important;
   max-width: 1120px !important;
@@ -236,13 +339,38 @@ h1, h2, h3 {
   width: 100%;
 }
 
+[data-testid="stChatInput"] > div,
+[data-testid="stChatInput"] form,
+[data-testid="stChatInput"] [data-baseweb="textarea"],
+[data-testid="stChatInput"] [data-baseweb="textarea"] > div {
+  background: var(--veri-input-bg) !important;
+  border-radius: 999px !important;
+}
+
 [data-testid="stChatInput"] textarea {
-  background-color: #12161c !important;
-  border: 1px solid rgba(255, 107, 95, .92) !important;
-  border-radius: 8px !important;
-  color: var(--veri-text) !important;
-  min-height: 2.45rem !important;
-  -webkit-text-fill-color: var(--veri-text) !important;
+  background-color: var(--veri-input-bg) !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  color: var(--veri-input-text) !important;
+  min-height: 3rem !important;
+  padding-top: .86rem !important;
+  padding-bottom: .86rem !important;
+  padding-left: 1.15rem !important;
+  padding-right: 3.25rem !important;
+  -webkit-text-fill-color: var(--veri-input-text) !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+[data-testid="stChatInput"] textarea:hover {
+  border-color: transparent !important;
+}
+
+[data-testid="stChatInput"] textarea:focus,
+[data-testid="stChatInput"] textarea:focus-visible {
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
 }
 
 [data-testid="stChatInput"] textarea::placeholder {
@@ -251,7 +379,28 @@ h1, h2, h3 {
 }
 
 [data-testid="stChatInput"] button {
-  color: var(--veri-coral) !important;
+  align-items: center !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  border-radius: 999px !important;
+  color: var(--veri-amber) !important;
+  display: inline-flex !important;
+  height: 2.35rem !important;
+  justify-content: center !important;
+  margin-right: .32rem !important;
+  transition: background-color .16s ease, color .16s ease, transform .16s ease;
+  width: 2.35rem !important;
+}
+
+[data-testid="stChatInput"] button:hover {
+  background: var(--veri-amber) !important;
+  color: #ffffff !important;
+  transform: translateY(-1px);
+}
+
+[data-testid="stChatInput"] button svg {
+  color: currentColor !important;
+  fill: currentColor !important;
 }
 
 .veri-answer-heading {
@@ -278,7 +427,7 @@ h1, h2, h3 {
   align-items: center;
   border: 1px solid rgba(54, 209, 196, .22);
   border-radius: 999px;
-  background: rgba(20, 23, 29, .88);
+  background: var(--veri-panel-2);
   color: var(--veri-muted);
   font-size: .78rem;
   font-weight: 700;
@@ -289,31 +438,31 @@ h1, h2, h3 {
 .veri-answer-origin-local span {
   border-color: rgba(123, 216, 143, .36);
   background: rgba(123, 216, 143, .1);
-  color: #b9f3c5;
+  color: var(--veri-local-text);
 }
 
 .veri-answer-origin-web span {
   border-color: rgba(91, 173, 255, .38);
   background: rgba(91, 173, 255, .1);
-  color: #b9d9ff;
+  color: var(--veri-web-text);
 }
 
 .veri-answer-origin-ai span {
   border-color: rgba(184, 132, 255, .38);
   background: rgba(184, 132, 255, .1);
-  color: #dcc8ff;
+  color: var(--veri-ai-text);
 }
 
 .veri-answer-origin-hybrid span {
   border-color: rgba(255, 200, 87, .42);
   background: rgba(255, 200, 87, .12);
-  color: #ffe3a3;
+  color: var(--veri-amber-text);
 }
 
 .veri-answer-origin-evidence span {
   border-color: rgba(255, 107, 95, .36);
   background: rgba(255, 107, 95, .1);
-  color: #ffc7c2;
+  color: var(--veri-evidence-text);
 }
 
 .veri-answer-origin-detail {
@@ -343,7 +492,7 @@ h1, h2, h3 {
   border: 1px solid rgba(255, 200, 87, .24);
   border-radius: 999px;
   background: rgba(255, 200, 87, .08);
-  color: #ffe3a3;
+  color: var(--veri-amber-text);
   font-size: .76rem;
   font-weight: 720;
   line-height: 1.2;
@@ -351,7 +500,7 @@ h1, h2, h3 {
 }
 
 .veri-evidence-summary {
-  border-top: 1px solid rgba(43, 48, 58, .75);
+  border-top: 1px solid var(--veri-line);
   margin: .95rem 0 .85rem 0;
   padding-top: .72rem;
 }
@@ -378,7 +527,7 @@ h1, h2, h3 {
   border: 1px solid rgba(255, 200, 87, .28);
   border-radius: 999px;
   background: rgba(255, 200, 87, .08);
-  color: #ffe3a3;
+  color: var(--veri-amber-text);
   font-size: .76rem;
   font-weight: 720;
   line-height: 1.2;
@@ -410,7 +559,7 @@ h1, h2, h3 {
 }
 
 .veri-source-strength-track {
-  background: rgba(43, 48, 58, .78);
+  background: var(--veri-track);
   border-radius: 999px;
   height: .5rem;
   overflow: hidden;
@@ -421,9 +570,9 @@ h1, h2, h3 {
   height: 100%;
 }
 
-.veri-source-strength-local { background: #6ee7a8; }
-.veri-source-strength-web { background: #7cc7ff; }
-.veri-source-strength-ai { background: #c8a7ff; }
+.veri-source-strength-local { background: var(--veri-local-text); }
+.veri-source-strength-web { background: var(--veri-web-text); }
+.veri-source-strength-ai { background: var(--veri-ai-text); }
 
 .veri-history-label {
   margin: 1rem 0 .65rem 0;
@@ -434,7 +583,7 @@ h1, h2, h3 {
 }
 
 .veri-inline-source-heading {
-  border-top: 1px solid rgba(43, 48, 58, .75);
+  border-top: 1px solid var(--veri-line);
   color: var(--veri-amber);
   font-size: .82rem;
   font-weight: 760;
@@ -443,11 +592,11 @@ h1, h2, h3 {
 }
 
 .veri-inline-source-heading-local {
-  color: #6ee7a8;
+  color: var(--veri-local-text);
 }
 
 .veri-inline-source-heading-web {
-  color: #7cc7ff;
+  color: var(--veri-web-text);
 }
 
 .veri-source-section {
@@ -461,11 +610,11 @@ h1, h2, h3 {
 }
 
 .veri-source-section-local {
-  border-left-color: #6ee7a8;
+  border-left-color: var(--veri-local-text);
 }
 
 .veri-source-section-web {
-  border-left-color: #7cc7ff;
+  border-left-color: var(--veri-web-text);
 }
 
 .veri-empty-state {
@@ -492,7 +641,7 @@ h1, h2, h3 {
   border: 1px solid rgba(255, 200, 87, 0.32);
   border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(255, 200, 87, 0.08), rgba(20, 23, 29, 0.92));
+    linear-gradient(180deg, rgba(255, 200, 87, 0.08), var(--veri-panel));
   padding: 1rem 1rem .9rem 1rem;
   margin-bottom: .65rem;
 }
@@ -528,7 +677,7 @@ h1, h2, h3 {
   border: 1px solid rgba(255, 200, 87, 0.2);
   border-radius: 12px;
   background:
-    linear-gradient(180deg, rgba(255, 200, 87, 0.08), rgba(20, 23, 29, 0.94));
+    linear-gradient(180deg, rgba(255, 200, 87, 0.08), var(--veri-panel));
   padding: 1rem 1rem .95rem 1rem;
   margin-bottom: .75rem;
 }
@@ -563,10 +712,10 @@ h1, h2, h3 {
 
 .stButton > button,
 .stDownloadButton > button {
-  border-radius: 8px;
-  border: 1px solid var(--veri-line);
-  background: #1a1f27;
-  color: var(--veri-text);
+  border-radius: 8px !important;
+  border: 1px solid var(--veri-line) !important;
+  background: var(--veri-panel-2) !important;
+  color: var(--veri-button-text) !important;
   min-height: 2.35rem;
 }
 
@@ -578,40 +727,89 @@ h1, h2, h3 {
 
 .stButton > button[kind="primary"] {
   background: linear-gradient(90deg, #ffc857, #36d1c4);
-  color: #101319;
+  color: var(--veri-primary-text) !important;
   border: 0;
   font-weight: 700;
 }
 
 .stTextInput input,
 .stSelectbox div[data-baseweb="select"] > div,
+.stMultiSelect div[data-baseweb="select"] > div,
 .stNumberInput input,
 .stTextArea textarea {
-  background-color: #12161c !important;
+  background-color: var(--veri-input-bg) !important;
   border-color: var(--veri-line) !important;
-  color: var(--veri-text) !important;
+  color: var(--veri-input-text) !important;
   border-radius: 8px;
-  -webkit-text-fill-color: var(--veri-text) !important;
+  -webkit-text-fill-color: var(--veri-input-text) !important;
   caret-color: var(--veri-amber);
   box-shadow: none !important;
+}
+
+.stSelectbox div[data-baseweb="select"] *,
+.stMultiSelect div[data-baseweb="select"] * {
+  color: var(--veri-input-text) !important;
+  -webkit-text-fill-color: var(--veri-input-text) !important;
+}
+
+.stSelectbox div[data-baseweb="select"] input,
+.stMultiSelect div[data-baseweb="select"] input {
+  color: var(--veri-input-text) !important;
+  -webkit-text-fill-color: var(--veri-input-text) !important;
+}
+
+.stSelectbox div[data-baseweb="select"] svg,
+.stMultiSelect div[data-baseweb="select"] svg {
+  color: var(--veri-muted) !important;
+  fill: var(--veri-muted) !important;
+}
+
+.stMultiSelect [data-baseweb="tag"] {
+  background-color: rgba(54, 209, 196, .16) !important;
+  border: 1px solid rgba(54, 209, 196, .32) !important;
+  color: var(--veri-text) !important;
+}
+
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] ul,
+div[data-baseweb="popover"],
+div[data-baseweb="menu"] {
+  background-color: var(--veri-panel) !important;
+  border: 1px solid var(--veri-line) !important;
+  color: var(--veri-text) !important;
+}
+
+[data-baseweb="popover"] [role="option"],
+div[data-baseweb="menu"] li {
+  background-color: var(--veri-panel) !important;
+  color: var(--veri-text) !important;
+  -webkit-text-fill-color: var(--veri-text) !important;
+}
+
+[data-baseweb="popover"] [role="option"]:hover,
+[data-baseweb="popover"] [aria-selected="true"],
+div[data-baseweb="menu"] li:hover {
+  background-color: var(--veri-panel-2) !important;
+  color: var(--veri-amber) !important;
+  -webkit-text-fill-color: var(--veri-amber) !important;
 }
 
 .stTextInput input:-webkit-autofill,
 .stTextInput input:-webkit-autofill:hover,
 .stTextInput input:-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0 1000px #12161c inset !important;
-  -webkit-text-fill-color: var(--veri-text) !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--veri-input-bg) inset !important;
+  -webkit-text-fill-color: var(--veri-input-text) !important;
   transition: background-color 9999s ease-in-out 0s;
 }
 
 [data-baseweb="input"] {
-  background-color: #12161c !important;
+  background-color: var(--veri-input-bg) !important;
   border-color: var(--veri-line) !important;
 }
 
 [data-baseweb="input"] button {
-  background-color: #1a1f27 !important;
-  color: var(--veri-text) !important;
+  background-color: var(--veri-panel-2) !important;
+  color: var(--veri-input-text) !important;
 }
 
 [data-testid="stFileUploader"] {
@@ -622,8 +820,8 @@ h1, h2, h3 {
 }
 
 [data-testid="stFileUploaderDropzone"] {
-  background: #12161c !important;
-  border: 1px dashed #46505f !important;
+  background: var(--veri-input-bg) !important;
+  border: 1px dashed var(--veri-line) !important;
   border-radius: 12px !important;
   color: var(--veri-text) !important;
   padding: 1.1rem .9rem !important;
@@ -663,15 +861,15 @@ h1, h2, h3 {
 }
 
 [data-testid="stFileUploaderDropzone"] button {
-  background: #202734 !important;
-  border: 1px solid #596575 !important;
-  color: var(--veri-text) !important;
+  background: var(--veri-panel-2) !important;
+  border: 1px solid var(--veri-line) !important;
+  color: var(--veri-button-text) !important;
   border-radius: 8px !important;
   font-weight: 700 !important;
 }
 
 [data-testid="stFileUploaderFile"] {
-  background: #10151d !important;
+  background: var(--veri-panel-2) !important;
   border-radius: 8px !important;
   color: var(--veri-text) !important;
 }
@@ -680,10 +878,22 @@ h1, h2, h3 {
   color: var(--veri-text) !important;
 }
 
+[data-testid="stDataFrame"],
+[data-testid="stTable"] {
+  background: var(--veri-panel) !important;
+  border: 1px solid var(--veri-line) !important;
+  color: var(--veri-text) !important;
+}
+
+[data-testid="stDataFrame"] *,
+[data-testid="stTable"] * {
+  color: var(--veri-text) !important;
+}
+
 .veri-source-block {
   border: 1px solid var(--veri-line);
   border-radius: 8px;
-  background: rgba(20, 23, 29, .6);
+  background: var(--veri-panel);
   padding: .75rem;
   margin-top: .5rem;
 }
@@ -724,6 +934,4 @@ a {
   }
 }
 </style>
-        """,
-        unsafe_allow_html=True,
-    )
+"""

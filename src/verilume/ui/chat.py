@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 from datetime import datetime, timedelta
 from html import escape
@@ -37,6 +38,22 @@ ANSWER_HEADER = "Verilume Findings"
 EVIDENCE_HEADER = "Evidence Analysis"
 LOCAL_SOURCES_HEADER = "Document Citations"
 WEB_SOURCES_HEADER = "Web Evidence"
+CHAT_PLACEHOLDER_EXAMPLES = (
+    "Ask about your documents...",
+    "Search local files...",
+    "Ask a research question...",
+    "Compare local and web evidence...",
+    "Explain a concept...",
+    "Summarise uploaded documents...",
+)
+SEARCH_MODE_PLACEHOLDER_ICONS = {
+    "Auto": "🌐",
+    "Local Only": "📄",
+    "Local + AI": "🧠",
+    "Local + AI + Web": "🌐",
+    "Web Only": "🌍",
+    "Research Mode": "🔎",
+}
 
 
 def init_chat_state() -> None:
@@ -50,6 +67,8 @@ def init_chat_state() -> None:
         st.session_state.regenerate_requested = False
     if "conversation_state" not in st.session_state:
         st.session_state.conversation_state = ConversationState()
+    if "chat_placeholder_example" not in st.session_state:
+        st.session_state.chat_placeholder_example = random.choice(CHAT_PLACEHOLDER_EXAMPLES)
 
 
 def render_chat(settings: AppSettings) -> None:
@@ -67,7 +86,7 @@ def render_chat(settings: AppSettings) -> None:
         _generate_assistant_response(settings, regenerate_prompt)
         return
 
-    prompt = st.chat_input("Ask Verilume anything...")
+    prompt = st.chat_input(_chat_placeholder(settings))
     if not prompt:
         return
 
@@ -78,6 +97,16 @@ def render_chat(settings: AppSettings) -> None:
         st.markdown(prompt)
 
     _generate_assistant_response(settings, prompt)
+
+
+def _chat_placeholder(settings: AppSettings) -> str:
+    mode = str(getattr(settings, "search_mode", "Auto") or "Auto")
+    icon = SEARCH_MODE_PLACEHOLDER_ICONS.get(mode, "🌐")
+    example = str(
+        st.session_state.get("chat_placeholder_example")
+        or random.choice(CHAT_PLACEHOLDER_EXAMPLES)
+    )
+    return f"{icon} {mode} — {example}"
 
 
 def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:

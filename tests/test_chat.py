@@ -9,6 +9,7 @@ from verilume.core.schemas import LocalSource, RAGResponse, WebSource
 from verilume.settings import AppSettings
 from verilume.ui.chat import (
     _answer_origin,
+    _chat_placeholder,
     _display_answer,
     _evidence_badges,
     _evidence_detail_rows,
@@ -67,6 +68,15 @@ class ChatInteractionTests(unittest.TestCase):
         )
 
         self.assertIn("_Timestamp: 2026-06-16 19:20_", markdown)
+
+    def test_chat_placeholder_includes_search_mode_and_example(self) -> None:
+        with patch(
+            "verilume.ui.chat.st.session_state",
+            {"chat_placeholder_example": "Search local files..."},
+        ):
+            placeholder = _chat_placeholder(AppSettings(search_mode="Local Only"))
+
+        self.assertEqual(placeholder, "📄 Local Only — Search local files...")
 
     def test_partition_message_history_keeps_recent_messages_visible(self) -> None:
         archived_timestamp = (datetime.now().astimezone() - timedelta(days=4)).isoformat(

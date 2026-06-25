@@ -30,7 +30,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
-    inject_styles()
+    inject_styles(base_settings.appearance)
 
     if not _password_ok(base_settings):
         return

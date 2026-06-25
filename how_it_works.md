@@ -44,6 +44,7 @@ The main files and their jobs are:
 | `src/verilume/core/table_agent.py` | Performs safe pandas calculations and returns calculation-grounded answers. |
 | `src/verilume/rag.py` | Main orchestration layer. It runs local retrieval, AI knowledge generation, web search, reranking, answer selection, citation verification, and final answer validation. |
 | `src/verilume/ui/sidebar.py` | Settings, upload controls, remove-document controls, and stats cards. |
+| `src/verilume/ui/header.py` | App header, status pills, and the immediate-save dark/light appearance toggle. |
 | `src/verilume/ui/chat.py` | Chat rendering, source blocks, evidence panels, and exports. |
 
 ## 3. Data and Storage Layout
@@ -61,7 +62,18 @@ By default, user data is stored in the local user directory:
 
 This keeps user content outside the repository and makes the app usable as a desktop tool without polluting the project tree.
 
-## 4. How Ingestion Works
+## 4. Appearance
+
+Verilume defaults to dark mode. The header includes a visible appearance toggle:
+
+- Dark mode uses the original Verilume black/gold interface.
+- Light mode uses white and light-gray surfaces with dark text.
+- The toggle writes `VERILUME_APPEARANCE` to `~/.verilume/config.env` through the existing user config system, so no `Save settings` click is required.
+- `VERILUME_APPEARANCE=dark` or `VERILUME_APPEARANCE=light` can also be set from the environment.
+
+The CSS is still one stylesheet. `src/verilume/ui/styles.py` injects palette variables for the selected mode, and controls such as select boxes, multiselects, buttons, chat input, metrics, expanders, source tables, and evidence cards read from those variables so text remains readable in both modes.
+
+## 5. How Ingestion Works
 
 When files are uploaded or `verilume ingest` is run, Verilume does the following:
 
@@ -76,7 +88,7 @@ When files are uploaded or `verilume ingest` is run, Verilume does the following
 
 The current ingest pipeline uses a staged rebuild-and-swap model instead of mutating the live Chroma store in place. In practice that means Verilume builds a temporary Chroma database and manifest first, and only swaps them into `~/.verilume` after a successful ingest. This makes resets and rebuilds much more reliable.
 
-### 4.1 Supported local document types
+### 5.1 Supported local document types
 
 The local ingest surface now supports:
 
@@ -89,7 +101,7 @@ The local ingest surface now supports:
 
 This means the local knowledge base can now be built from born-digital documents, scanned documents, image-only evidence, and slide decks without changing the higher-level web or model routing logic.
 
-### 4.2 OCR and scanned-document handling
+### 5.2 OCR and scanned-document handling
 
 OCR is handled inside `src/verilume/ingest.py`.
 
@@ -103,7 +115,7 @@ The current behavior is:
 
 This keeps ordinary PDFs fast while still allowing image-only or scan-heavy documents to become searchable.
 
-### 4.3 Why the staged rebuild is now safer
+### 5.3 Why the staged rebuild is now safer
 
 The staged ingest path had one subtle failure mode during this work: app-side Chroma clients created for stats or staged indexing could keep stale handles open while the database directory was being swapped.
 
@@ -118,7 +130,7 @@ That fix prevents successful indexing from being rolled back incorrectly as an "
 
 When a build does fail, the Streamlit UI now also surfaces the actual exception text instead of only showing a generic "check the terminal" banner. That makes document-specific ingestion problems much easier to diagnose.
 
-## 5. How Search Works
+## 6. How Search Works
 
 Verilume does not treat every question the same way. It first classifies the question and then follows a search plan.
 
@@ -431,7 +443,7 @@ PRICE = β₀ + β₁M2 + β₂AGE + β₃DIS + ε
 
 Ordinary text is not globally rewritten. In particular, the repair layer does not replace normal letters with Greek symbols unless the line already looks like an equation.
 
-## 6. How Verilume Decides on the Final Answer
+## 7. How Verilume Decides on the Final Answer
 
 The final answer is chosen by combining several stages.
 
@@ -571,7 +583,7 @@ For stable/static questions, final synthesis combines the useful streams that su
 
 When AI knowledge cannot answer or is insufficient, Verilume can still produce a local-only answer from the indexed files. When the question is current or otherwise changeable, Verilume keeps the final answer web-grounded and does not rely on AI knowledge as evidence.
 
-## 7. How Answer Validation Works
+## 8. How Answer Validation Works
 
 Validation happens in two distinct layers.
 
@@ -595,7 +607,7 @@ After citation verification, Verilume compares the answer text against the suppo
 
 This is especially important when the system has to decide whether the final answer is strong enough to trust or whether it should fall back to a more conservative, evidence-only answer.
 
-## 8. How the App Labels Results
+## 9. How the App Labels Results
 
 The UI renders the answer first. Evidence metadata is intentionally placed below the answer so the user does not have to read badges before the conclusion.
 
@@ -611,6 +623,8 @@ The source-strength bars are derived from the evidence streams that survived fin
 - Local strength uses the best local retrieval score or local confidence fallback.
 - Web strength uses the best web source score or domain/source confidence fallback.
 - AI strength is shown only when model knowledge actually contributed.
+
+The chat input is styled as a compact command bar. Its placeholder shows the active search mode, such as `🌐 Auto`, `📄 Local Only`, or `🌍 Web Only`, followed by a rotating example prompt for that session. The command bar uses one continuous pill surface: dark in dark mode and white in light mode. It keeps a subtle neutral outline by default, switches to amber on hover or focus, and uses a soft amber glow instead of the stronger coral accent so the conversation content remains visually dominant.
 
 Typical source labels are:
 
@@ -628,7 +642,7 @@ The internal diagnostics also track whether the final answer used local evidence
 
 The source tree groups web evidence by source type, such as Government, University, Research, News, Social, and general Web sources. Local document citations remain separate and include page/document metadata.
 
-## 9. Current Search Decision Rules in Plain English
+## 10. Current Search Decision Rules in Plain English
 
 The practical answer policy is:
 
@@ -646,7 +660,7 @@ The practical answer policy is:
 12. Benchmark Mode is diagnostic only; it never replaces the normal answer.
 13. Search mode is the final source-use authority.
 
-## 10. Roadmap From Current Suggestions
+## 11. Roadmap From Current Suggestions
 
 Several suggested improvements are now partially implemented and documented, while others are intentionally roadmap-sized:
 
@@ -669,7 +683,7 @@ Several suggested improvements are now partially implemented and documented, whi
 | Preference memory | Future conversation/profile feature. |
 | Anonymous latency analytics | Future opt-in diagnostics feature. |
 
-## 11. How to Install and Run the macOS App Now
+## 12. How to Install and Run the macOS App Now
 
 There are two practical macOS paths today.
 
@@ -686,7 +700,7 @@ python -m pip install -e .
 python launcher.py
 ```
 
-You can also double-click `Verilume.command`. That script installs the package in editable mode and launches the app.
+You can also double-click `Verilume.command`. That script installs the package in editable mode and launches the app. The default Streamlit port is `8511`; if that port is already in use, the launcher automatically tries `8512`, then `8513`. If all three preferred ports are busy, it prints a message and reclaims `8511` for the new launch. Set `VERILUME_PORT=8525` or another port before launching if you want to force a specific port.
 
 ### Option B: build a real `.app` bundle
 
@@ -707,7 +721,7 @@ After building:
 2. On first launch, macOS may require right-click then `Open`.
 3. Enter your Hugging Face token and optional web provider key in the sidebar.
 
-## 12. How to Install the Python Package Later
+## 13. How to Install the Python Package Later
 
 ### Install from GitHub now
 
@@ -749,7 +763,7 @@ python -m pip install verilume
 verilume run
 ```
 
-## 13. How the Package Will Be Published
+## 14. How the Package Will Be Published
 
 The package metadata already lives in `pyproject.toml` and exposes the CLI entrypoint `verilume = verilume.cli:main`.
 
@@ -765,7 +779,7 @@ python -m twine upload dist/*
 
 After publication, GitHub can remain the source repository while PyPI becomes the installation source for end users.
 
-## 14. Useful Commands
+## 15. Useful Commands
 
 ```bash
 verilume run
@@ -778,7 +792,7 @@ verilume doctor
 
 `verilume doctor` is the fastest health check. It reports whether the docs directory exists, whether Chroma exists, whether the manifest exists, whether tokens are configured, and how many chunks are indexed.
 
-## 15. Short Summary
+## 16. Short Summary
 
 Verilume is implemented as a local-first evidence system, not just a chat wrapper around an LLM.
 

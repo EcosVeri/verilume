@@ -84,6 +84,14 @@ class AgenticPlanner:
             reasons.append("Local Only mode blocks model and web actions.")
             return _plan(actions, reasons, EvidencePolicy.LOCAL_ONLY.value, question_type, interpretation, expected_outputs)
 
+        if (
+            bool(getattr(settings, "enable_graphrag", True))
+            and question_type in {"person_lookup", "company_lookup", "scientific_explanation", "definition"}
+        ):
+            actions.append(BUILD_GRAPH_CONTEXT)
+            expected_outputs.append("graph context")
+            reasons.append("Entity and topic context can improve local retrieval.")
+
         dynamic = understanding.fact_type in {FactType.DYNAMIC, FactType.NEWS}
         explicit_web = bool(interpretation.use_web or _explicit_web_request(question))
         local_only_policy = understanding.evidence_policy == EvidencePolicy.LOCAL_ONLY

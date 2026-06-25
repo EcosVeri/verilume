@@ -57,6 +57,8 @@ from verilume.core.generation import (
     create_generator,
     is_model_selection_warning,
 )
+from verilume.core.graphrag import GraphRAGRetriever
+from verilume.core.knowledge_graph import KnowledgeGraph
 from verilume.core.query_preprocessing import normalize_query, query_variants
 from verilume.core.query_interpreter import (
     QueryInterpretationAgent,
@@ -526,6 +528,9 @@ class VerilumeRAG:
         self.table_store = TableStore(settings.table_store_dir)
         self.table_retrieval = TableRetrieval(self.table_store)
         self.table_agent = TableAgent()
+        self.knowledge_graph = KnowledgeGraph(settings.knowledge_graph_path)
+        self.graph_rag = GraphRAGRetriever(self.knowledge_graph)
+        self._graphrag_enabled = bool(getattr(settings, "enable_graphrag", True))
         self.citation_verifier = CitationVerificationAgent()
         self.semantic_cache = (
             SemanticCache(settings.semantic_cache_path)
@@ -689,6 +694,20 @@ class VerilumeRAG:
             confidence="local-grounded",
             diagnostics=diagnostics,
         )
+
+    def _index_local_sources_in_graph(self, local_sources: Sequence[LocalSource]) -> None:
+        if not (self._graphrag_enabled and getattr(self.settings, "enable_graphrag", True)):
+            return
+        for source in local_sources:
+            try:
+                self.knowledge_graph.index_chunk(
+                    source.text,
+                    document=source.document,
+                    page=source.page,
+                    chunk_id=source.chunk_id,
+                )
+            except Exception:
+                continue
 
     def _ask_uncached(
         self,
@@ -945,6 +964,23 @@ class VerilumeRAG:
         diagnostics["local_retrieval_policy_would_skip"] = planned_skip_local_retrieval
         local_queries = _local_search_queries(query, identity_tokens, local_file_search_question)
         diagnostics["local_queries"] = local_queries
+        graph_context = None
+        graph_sources: list[LocalSource] = []
+        if self._graphrag_enabled and getattr(self.settings, "enable_graphrag", True):
+            graph_context = self.graph_rag.retrieve_graph_context(query)
+            graph_sources = self.graph_rag.retrieve_graph_chunks(
+                query,
+                graph_context,
+                limit=max(1, self.settings.retriever_k),
+            )
+        diagnostics["graph_context"] = {
+            "seed_entities": graph_context.seed_entities if graph_context else [],
+            "expanded_entities": graph_context.expanded_entities if graph_context else [],
+            "related_documents": graph_context.related_documents if graph_context else [],
+            "related_chunks": graph_context.related_chunks if graph_context else [],
+            "summary": graph_context.graph_summary if graph_context else "",
+        }
+        diagnostics["graph_source_count"] = len(graph_sources)
         diagnostics["local_retrieval_skipped"] = skip_local_retrieval
         diagnostics["local_retrieval_attempted"] = not skip_local_retrieval
 
@@ -954,6 +990,14 @@ class VerilumeRAG:
         else:
             _emit_stage(on_stage, "Searching local evidence...")
             local_sources = self._search_local_sources(query, identity_tokens, local_file_search_question)
+        if graph_sources:
+            local_sources = _merge_local_sources(
+                graph_sources,
+                local_sources,
+                limit=max(self.settings.retriever_k * 2, len(graph_sources)),
+            )
+            diagnostics["graph_sources_merged"] = True
+        self._index_local_sources_in_graph(local_sources)
         _check_generation_stop(should_stop)
         if local_corpus_overview_question:
             corpus_sources = self._local_corpus_sources()

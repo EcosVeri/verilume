@@ -25,6 +25,7 @@ The main files and their jobs are:
 | `src/verilume/core/agentic_planner.py` | Produces explicit pipeline actions such as local search, model answer, web search, document summarization, table extraction, and calculation. |
 | `src/verilume/core/claim_extraction.py` | Extracts atomic factual claims from final answers for evidence comparison. |
 | `src/verilume/core/evidence_comparison.py` | Compares each claim against local, web, and AI evidence streams. |
+| `src/verilume/core/graphrag.py` | Expands entity/topic questions through the knowledge graph and produces graph-backed local source candidates. |
 | `src/verilume/core/knowledge_graph.py` | SQLite knowledge graph for people, organizations, locations, topics, publications, documents, and their mentions/relations. |
 | `src/verilume/core/retrieval.py` | Chroma retriever with dense, lexical, and hybrid retrieval. |
 | `src/verilume/core/query_interpreter.py` | Interprets user intent, follow-up context, source policy, and search preferences. |
@@ -303,6 +304,30 @@ Rule-based extraction currently detects:
 - simple affiliation and supervision patterns
 
 Every edge and mention stores document, page, and chunk metadata when available. The graph can answer structural lookup questions such as which documents mention a person, which topics are linked to a method, or which organizations are connected to a person. GraphRAG uses this in the next layer to improve retrieval before vector search.
+
+### 5.12 GraphRAG
+
+GraphRAG complements vector retrieval with graph context. It does not replace Chroma search.
+
+For entity-heavy or topic-heavy questions, the planner can emit `build_graph_context`. The GraphRAG retriever then:
+
+1. Detects seed entities from the question.
+2. Looks those entities up in the local knowledge graph.
+3. Expands one hop to neighboring people, organizations, topics, documents, and methods.
+4. Collects related documents and chunk IDs from graph mentions.
+5. Converts graph mentions into local source candidates.
+6. Merges graph candidates with normal vector/lexical local retrieval before reranking and generation.
+
+This helps questions such as:
+
+- Who is Christophe Ley?
+- Which documents connect Christophe Ley and Bayesian inference?
+- Which topics are connected to Hamiltonian Monte Carlo?
+- Which documents mention both Bayesian model selection and hydrology?
+
+GraphRAG is evidence-bound: graph candidates are created from stored mentions, and each mention keeps document/page/chunk metadata. If the graph has no relevant context, Verilume simply continues with the normal retrieval path.
+
+GraphRAG can be disabled with `ENABLE_GRAPHRAG=false`. This is useful for test isolation or for users who want strict vector/lexical retrieval only.
 
 ## 6. How Verilume Decides on the Final Answer
 

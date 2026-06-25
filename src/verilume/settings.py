@@ -390,6 +390,7 @@ def _saved_config_values(
         "SEMANTIC_CACHE_LOCAL_TTL_SECONDS": settings.semantic_cache_local_ttl_seconds,
         "TABLE_STORE_DIR": settings.table_store_dir,
         "KNOWLEDGE_GRAPH_PATH": settings.knowledge_graph_path,
+        "ENABLE_GRAPHRAG": settings.enable_graphrag,
         # Retrieval and UI
         "SHOW_LOCAL_SOURCES": settings.show_local_sources,
         "ANSWER_STYLE": settings.answer_style,
@@ -450,6 +451,7 @@ class AppSettings:
     semantic_cache_local_ttl_seconds: int = 0
     table_store_dir: Path = DATA_HOME / "tables"
     knowledge_graph_path: Path = DATA_HOME / "knowledge_graph.sqlite"
+    enable_graphrag: bool = True
 
     # Embeddings
     embed_model: str = "BAAI/bge-small-en-v1.5"
@@ -980,6 +982,10 @@ class AppSettings:
             knowledge_graph_path=_path(
                 "KNOWLEDGE_GRAPH_PATH",
                 defaults.knowledge_graph_path,
+            ),
+            enable_graphrag=_bool(
+                "ENABLE_GRAPHRAG",
+                defaults.enable_graphrag,
             ),
             # Embeddings
             embed_model=os.getenv("EMBED_MODEL", defaults.embed_model),

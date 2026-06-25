@@ -118,6 +118,8 @@ For normal questions, the query interpreter resolves:
 - whether the prompt is a follow-up
 - whether the user is asking about uploaded local files
 - whether the question is time-sensitive or current
+- whether the question is a stable fact, dynamic fact, news, scientific explanation, local-document question, person lookup, or company lookup
+- which evidence policy applies: `local_only`, `local_plus_model`, `local_plus_web`, `local_model_web`, or `web_only`
 - whether web evidence is needed
 - which search queries should be generated
 
@@ -141,9 +143,11 @@ AI knowledge is now part of the normal answer path instead of a last-resort add-
 
 The current behavior is:
 
-1. If local evidence is insufficient and web search is disabled, Verilume uses AI knowledge.
-2. If web search is enabled and the question needs broader evidence, Verilume can run AI knowledge and web search in parallel.
-3. If local evidence is already sufficient for a non-current answer, Verilume still keeps the answer local-first, but it can still use AI knowledge as corroborating context internally.
+1. If local evidence exists for a stable non-current question, Verilume still asks the AI model for useful background or explanation.
+2. If the AI answer is relevant and sufficient, final synthesis combines the AI knowledge with the local evidence.
+3. Local file evidence has more weight than AI knowledge. If they disagree, local evidence wins.
+4. If AI knowledge cannot answer or is insufficient, Verilume keeps the answer local-only when local evidence answers the question.
+5. If web search is disabled and local evidence is missing, Verilume can answer stable non-current questions from AI knowledge alone.
 
 For model-only answers, the app labels the result as AI knowledge and marks it as not externally verified.
 
@@ -151,11 +155,14 @@ For model-only answers, the app labels the result as AI knowledge and marks it a
 
 Web search is used when:
 
-1. The question is explicitly asking for web search.
-2. The question is current or time-sensitive.
-3. Local evidence does not clearly answer the question and web search is enabled.
+1. Web search is enabled and the question is a normal stable/static knowledge question.
+2. The question explicitly asks for web search.
+3. The question is current, time-sensitive, or otherwise likely to change.
+4. Local evidence and AI knowledge are both insufficient and web search is enabled.
 
-Web search is not supposed to override strong, stable local evidence unnecessarily. It supplements or validates when appropriate.
+For stable/static questions, web search is paired with AI knowledge rather than replacing it. For current or changeable questions, web evidence becomes the source of truth and AI knowledge is not used as final evidence.
+
+Web search is not supposed to override strong, stable local evidence unnecessarily. It supplements or validates when appropriate, and local evidence keeps the highest weight when the question is about uploaded documents.
 
 ### 5.6 Local-file exceptions
 
@@ -166,6 +173,8 @@ For example:
 - “Is this in my local files?”
 - “Which document contains my language certificate?”
 - “What date is written on this uploaded certificate?”
+- “Summarise the docs in the database.”
+- “How many files are in the data base?”
 - “In the uploaded file scanned-smoke.pdf, what OCR token appears in the document?”
 
 These are answered strictly from local indexed files. AI knowledge and web search should not invent a local-file answer.
@@ -186,7 +195,35 @@ The RAG layer may have up to three candidate sources of truth:
 
 ### 6.2 Evidence ranking
 
-Local and web sources are reranked before final synthesis. The system looks at:
+Local, web, and model evidence are converted into structured evidence items before final synthesis. Each evidence item stores:
+
+- source type: local, web, or AI knowledge
+- source name or title
+- citation label
+- source text
+- retrieval score
+- cross-encoder or reranker score
+- entity-match score for person and company lookups
+- authority score
+- freshness score
+- AI-consistency score
+- final evidence score
+
+The final evidence score is weighted as:
+
+```text
+final_score =
+  0.30 * retrieval_score +
+  0.25 * cross_encoder_score +
+  0.20 * entity_match_score +
+  0.10 * authority_score +
+  0.10 * freshness_score +
+  0.05 * ai_consistency_score
+```
+
+The weights can be adjusted from settings later, but the default behavior is designed to make evidence arbitration happen before the final answer is written.
+
+Local and web sources are also reranked before final synthesis. The system looks at:
 
 - lexical overlap
 - semantic similarity
@@ -195,21 +232,60 @@ Local and web sources are reranked before final synthesis. The system looks at:
 - source authority
 - source freshness for current questions
 
-### 6.3 Conflict resolution
+Authority currently uses these rough trust levels:
+
+| Source class | Default authority score |
+| --- | ---: |
+| official government / official institution | 1.00 |
+| university | 0.95 |
+| scientific paper or academic source | 0.95 |
+| local indexed document | 0.90 |
+| news source | 0.80 |
+| Wikipedia | 0.70 |
+| AI model knowledge | 0.60 |
+| standard web source | 0.55 |
+| blog | 0.40 |
+| social media | 0.25 |
+
+For person lookups, private identity-document chunks such as passports are demoted unless the question is specifically asking about that document. University profiles, thesis material, supervisor references, CV material, and publication context get a relevance boost. This prevents a passport chunk from dominating a general person search simply because it contains an exact name.
+
+Person lookups also use entity verification before final synthesis. If the query is a bare person name such as `Christophe Ley`, local and web evidence must actually match that queried person. Chunks that foreground a different named person, such as `Gabriella Vinco`, are discarded even if they mention the queried name incidentally. Coursework, regression exercises, invoices, certificates, and other non-profile documents are treated as negative identity context unless the question is explicitly about those documents.
+
+### 6.3 Evidence policies
+
+The classifier now assigns an explicit evidence policy before final arbitration:
+
+| Policy | Meaning |
+| --- | --- |
+| `local_only` | Use indexed local files as the source of truth. This is used for uploaded-document questions, document summaries, database/library inventory, and direct local facts. |
+| `local_plus_model` | Search local first and allow AI knowledge only as stable explanatory support. |
+| `local_plus_web` | Search local first and use web evidence for external validation. |
+| `local_model_web` | Collect candidates from local files, AI knowledge, and web when web search is enabled, then rank and reconcile them. |
+| `web_only` | Search local first, but use web evidence as factual authority because the answer can change. AI knowledge can help wording but is not treated as final evidence. |
+
+The local search step still runs first for real knowledge questions. The policy controls arbitration after evidence collection; it does not disable the local database.
+
+### 6.4 Conflict resolution
 
 If evidence disagrees, Verilume tries to resolve the conflict rather than merging everything blindly.
 
 Examples:
 
 - current-office questions prefer authoritative and recent sources
-- identity lookups filter out same-name but wrong-person pages
+- identity lookups filter out same-name but wrong-person pages and use entity-match scoring before synthesis
 - stale public directory pages are not trusted as current-role evidence
 
-### 6.4 Final synthesis
+### 6.5 Final synthesis
 
 When web evidence is involved, Verilume builds a verified evidence payload and asks the model to synthesize only from that evidence. The model is instructed not to invent facts or citation labels.
 
-When the answer is local-only, Verilume can still validate the result against the evidence set instead of returning it completely raw.
+For stable/static questions, final synthesis combines the useful streams that survived validation:
+
+1. Local evidence carries the most weight and wins conflicts.
+2. AI knowledge can add definitions, framing, and stable background when it is relevant.
+3. Web evidence can add externally sourced support and clickable `[W#]` citations.
+
+When AI knowledge cannot answer or is insufficient, Verilume can still produce a local-only answer from the indexed files. When the question is current or otherwise changeable, Verilume keeps the final answer web-grounded and does not rely on AI knowledge as evidence.
 
 ## 7. How Answer Validation Works
 
@@ -258,12 +334,14 @@ The practical answer policy is:
 1. Search local files first.
 2. Greetings, thanks, identity prompts such as "Who are you?", and simple capability prompts do not enter the full RAG flow.
 3. If the question is about uploaded local material or a personal document fact such as passport issue date or passport expiry, answer from local files only.
-4. If local evidence is strong and the question is not current or otherwise changeable, keep the answer local-first.
-5. If local evidence is missing or weak for a stable question, use AI knowledge next.
-6. Only after local evidence and AI knowledge are insufficient should web evidence be pulled in for stable questions.
-7. If the question is truly current, time-sensitive, explicitly asks for web search, or is the kind of answer that can change over time, Verilume can still use AI knowledge and web evidence together and then reconcile and rank the result.
-8. The final answer is still selected by ranking the surviving local, model, and web evidence streams rather than blindly trusting whichever stream ran last.
-9. Never allow unsupported citations or obviously wrong same-name identity pages to decide the answer.
+4. If local evidence is strong and the question is stable/non-current, combine it with relevant AI knowledge, but weight local evidence more heavily.
+5. If AI knowledge cannot answer or is insufficient, keep the answer local-only when the local files answer the question.
+6. If web search is enabled for a stable/static question, run web search and AI knowledge together and synthesize them with any local evidence that was found.
+7. Use web-only evidence for current events, live facts, recent roles, population, GDP, prices, laws, schedules, weather, latest papers, and other answers that can change.
+8. For bare person-name lookups, discard evidence that is primarily about another named person before the final answer is written.
+9. If web search is disabled and local evidence is missing, AI knowledge can answer stable questions by itself.
+10. The final answer is selected by ranking the surviving local, model, and web evidence streams rather than blindly trusting whichever stream ran last.
+11. Never allow unsupported citations or obviously wrong same-name identity pages to decide the answer.
 
 ## 10. How to Install and Run the macOS App Now
 

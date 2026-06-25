@@ -25,6 +25,24 @@ class QueryType(str, Enum):
     GENERAL = "general"
 
 
+class FactType(str, Enum):
+    STABLE = "stable_fact"
+    DYNAMIC = "dynamic_fact"
+    NEWS = "news"
+    LOCAL_DOCUMENT = "local_document"
+    SCIENTIFIC = "scientific_explanation"
+    PERSON_LOOKUP = "person_lookup"
+    COMPANY_LOOKUP = "company_lookup"
+
+
+class EvidencePolicy(str, Enum):
+    LOCAL_ONLY = "local_only"
+    LOCAL_PLUS_MODEL = "local_plus_model"
+    LOCAL_PLUS_WEB = "local_plus_web"
+    LOCAL_MODEL_WEB = "local_model_web"
+    WEB_ONLY = "web_only"
+
+
 class EvidenceSourceType(str, Enum):
     LOCAL_CHUNK = "local"
     LOCAL = "local"
@@ -39,6 +57,13 @@ EvidenceKind = EvidenceSourceType
 class EvidenceAuthority(str, Enum):
     OFFICIAL = "official"
     INTERNAL = "internal"
+    UNIVERSITY = "university"
+    SCIENTIFIC = "scientific_paper"
+    WIKIPEDIA = "wikipedia"
+    NEWS = "news"
+    BLOG = "blog"
+    SOCIAL_MEDIA = "social_media"
+    MODEL = "model"
     STANDARD = "standard"
 
 
@@ -46,6 +71,9 @@ class EvidenceAuthority(str, Enum):
 class QueryUnderstanding:
     primary_type: QueryType
     types: list[QueryType]
+    fact_type: FactType = FactType.STABLE
+    evidence_policy: EvidencePolicy = EvidencePolicy.LOCAL_MODEL_WEB
+    entity_terms: list[str] = field(default_factory=list)
     local_file_question: bool = False
     requires_web_validation: bool = False
     requires_date_reconciliation: bool = False
@@ -187,7 +215,9 @@ class FinalAnswerPayload:
 
 _CURRENT_MARKERS = (
     "latest", "current", "recent", "today", "now", "this year", "2026", "2025",
-    "price", "prices", "law", "directive", "regulation", "reach regulation", "eu reach",
+    "price", "prices", "stock price", "share price", "exchange rate", "weather",
+    "forecast", "schedule", "deadline", "population", "gdp", "inflation",
+    "unemployment", "interest rate", "law", "directive", "regulation", "reach regulation", "eu reach",
     "ceo", "president", "prime minister",
     "secretary of state", "foreign secretary", "foreign minister", "defence minister",
     "defense minister", "minister of defence", "minister of defense", "finance minister",
@@ -195,13 +225,26 @@ _CURRENT_MARKERS = (
     "monarch", "weather", "schedule", "deadline", "news", "breaking", "resign",
     "resigned", "resignation", "updated", "newest", "most recent",
 )
+_DYNAMIC_FACT_MARKERS = (
+    "population", "gdp", "gross domestic product", "stock price", "share price",
+    "market cap", "exchange rate", "weather", "forecast", "temperature", "schedule",
+    "timetable", "deadline", "law", "regulation", "directive", "tax rate", "inflation",
+    "unemployment", "interest rate", "price", "prices", "latest paper", "new paper",
+    "newest paper", "recent paper", "current ceo", "ceo of", "president of",
+    "prime minister of", "minister of", "head of", "director of",
+)
 _LOCAL_MARKERS = (
-    "local file", "local files", "uploaded", "indexed", "document", "documents",
+    "local file", "local files", "uploaded", "indexed", "document", "documents", "doc", "docs",
     "knowledge base", "in my files", "in the files", "which file", "which document",
+    "database", "data base",
 )
 _RESEARCH_MARKERS = (
     "paper", "papers", "scientific", "study", "studies", "publication", "review",
     "research", "doi", "arxiv", "journal", "conference",
+)
+_SCIENTIFIC_EXPLANATION_MARKERS = (
+    "explain", "what is", "define", "bayes", "hmc", "spectral analysis",
+    "regression", "model", "algorithm", "method", "factor", "theorem",
 )
 _AUTHORITY_MARKERS = (
     "gov", ".edu", "public.lu", "europa.eu", "who.int", "oecd.org", "worldbank.org",
@@ -293,10 +336,9 @@ def _coerce_authority(value: EvidenceAuthority | str) -> EvidenceAuthority:
     if isinstance(value, EvidenceAuthority):
         return value
     text = str(value).strip().lower()
-    if text == EvidenceAuthority.OFFICIAL.value:
-        return EvidenceAuthority.OFFICIAL
-    if text == EvidenceAuthority.INTERNAL.value:
-        return EvidenceAuthority.INTERNAL
+    for authority in EvidenceAuthority:
+        if text == authority.value:
+            return authority
     return EvidenceAuthority.STANDARD
 
 
@@ -308,13 +350,25 @@ def _infer_authority(
     if source_type == EvidenceSourceType.LOCAL_CHUNK:
         return EvidenceAuthority.INTERNAL
     if source_type == EvidenceSourceType.AI_KNOWLEDGE:
-        return EvidenceAuthority.STANDARD
+        return EvidenceAuthority.MODEL
 
     domain = urlparse(url).netloc.lower()
     metadata_text = " ".join(str(value) for value in (metadata or {}).values()).lower()
     haystack = f"{domain} {url.lower()} {metadata_text}"
-    if any(marker in haystack for marker in _AUTHORITY_MARKERS):
+    if any(marker in haystack for marker in ("gov", "gouv", "gouvernement", "government", "europa.eu", "public.lu", "who.int", "oecd.org", "worldbank.org")):
         return EvidenceAuthority.OFFICIAL
+    if any(marker in haystack for marker in (".edu", ".ac.", "university", "universite", "uni.lu", "harvard.edu", "mit.edu")):
+        return EvidenceAuthority.UNIVERSITY
+    if any(marker in haystack for marker in ("nature.com", "science.org", "arxiv.org", "doi.org", "springer", "sciencedirect", "journal", "pubmed")):
+        return EvidenceAuthority.SCIENTIFIC
+    if "wikipedia.org" in haystack:
+        return EvidenceAuthority.WIKIPEDIA
+    if any(marker in haystack for marker in ("reuters", "apnews", "bbc", "financialtimes", "ft.com", "guardian")):
+        return EvidenceAuthority.NEWS
+    if any(marker in haystack for marker in ("medium.com", "substack", "blog", "wordpress")):
+        return EvidenceAuthority.BLOG
+    if any(marker in haystack for marker in ("linkedin.com", "facebook.com", "x.com", "twitter.com", "instagram.com", "tiktok.com")):
+        return EvidenceAuthority.SOCIAL_MEDIA
     return EvidenceAuthority.STANDARD
 
 
@@ -348,9 +402,13 @@ def classify_question(question: str) -> QueryUnderstanding:
     types: list[QueryType] = []
     local = any(marker in lower for marker in _LOCAL_MARKERS)
     historical_age = _looks_like_historical_age_question(lower)
-    current = any(marker in lower for marker in _CURRENT_MARKERS) and not historical_age
+    dynamic = _looks_like_dynamic_fact(lower) and not historical_age
+    current = (any(marker in lower for marker in _CURRENT_MARKERS) or dynamic) and not historical_age
     research = any(marker in lower for marker in _RESEARCH_MARKERS)
     entity_lookup = any(marker in lower for marker in _ENTITY_LOOKUP_MARKERS) or _looks_like_entity_statement(question)
+    fact_type = _classify_fact_type(lower, local=local, current=current, research=research, entity_lookup=entity_lookup)
+    policy = _evidence_policy_for_fact_type(fact_type, local=local, current=current)
+    entity_terms = _entity_terms_from_question(question) if entity_lookup else []
 
     if local:
         types.append(QueryType.LOCAL)
@@ -373,6 +431,9 @@ def classify_question(question: str) -> QueryUnderstanding:
     return QueryUnderstanding(
         primary_type=primary,
         types=types,
+        fact_type=fact_type,
+        evidence_policy=policy,
+        entity_terms=entity_terms,
         local_file_question=local,
         requires_web_validation=current or research or entity_lookup,
         requires_date_reconciliation=current,
@@ -380,6 +441,92 @@ def classify_question(question: str) -> QueryUnderstanding:
         personal_company_entity_lookup=entity_lookup,
         ai_knowledge_allowed_as_final=not current,
     )
+
+
+def _evidence_policy_for_fact_type(
+    fact_type: FactType,
+    *,
+    local: bool,
+    current: bool,
+) -> EvidencePolicy:
+    if fact_type == FactType.LOCAL_DOCUMENT:
+        return EvidencePolicy.LOCAL_ONLY
+    if fact_type in {FactType.DYNAMIC, FactType.NEWS} or current:
+        return EvidencePolicy.WEB_ONLY
+    if fact_type in {FactType.PERSON_LOOKUP, FactType.COMPANY_LOOKUP, FactType.SCIENTIFIC}:
+        return EvidencePolicy.LOCAL_MODEL_WEB
+    if local:
+        return EvidencePolicy.LOCAL_PLUS_MODEL
+    return EvidencePolicy.LOCAL_MODEL_WEB
+
+
+def _entity_terms_from_question(question: str) -> list[str]:
+    text = re.sub(r"\s+", " ", (question or "").strip().strip(".,;:!?"))
+    text = re.sub(
+        r"^\s*(?:who\s+is|who's|tell\s+me\s+about|search\s+for|find|profile\s+of)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’-]+", text)
+    blocked = _ENTITY_STATEMENT_STOPWORDS | {
+        "is",
+        "are",
+        "was",
+        "were",
+        "current",
+        "latest",
+        "profile",
+        "person",
+        "company",
+    }
+    terms = [word.strip("'’").lower() for word in words if len(word.strip("'’")) > 1]
+    return [term for term in terms if term not in blocked]
+
+
+def _looks_like_dynamic_fact(lower: str) -> bool:
+    if not lower:
+        return False
+    if any(marker in lower for marker in _DYNAMIC_FACT_MARKERS):
+        if _looks_like_stable_definition(lower):
+            return False
+        return True
+    return False
+
+
+def _looks_like_stable_definition(lower: str) -> bool:
+    if re.search(
+        r"\b(?:population|gdp|gross domestic product|stock price|share price|exchange rate|weather|forecast|inflation|unemployment|interest rate|price|prices)\b",
+        lower,
+    ):
+        return False
+    return bool(
+        re.search(r"\b(?:what is|what are|define|explain|describe)\b", lower)
+        and not re.search(r"\b(?:current|latest|recent|today|now|newest|most recent|this year)\b", lower)
+    )
+
+
+def _classify_fact_type(
+    lower: str,
+    *,
+    local: bool,
+    current: bool,
+    research: bool,
+    entity_lookup: bool,
+) -> FactType:
+    if local:
+        return FactType.LOCAL_DOCUMENT
+    if "news" in lower or any(marker in lower for marker in ("breaking", "resigned", "resignation")):
+        return FactType.NEWS
+    if current:
+        return FactType.DYNAMIC
+    if entity_lookup:
+        if any(marker in lower for marker in ("company", "ceo", "founder", "owner", "chair", "director")):
+            return FactType.COMPANY_LOOKUP
+        return FactType.PERSON_LOOKUP
+    if research or any(marker in lower for marker in _SCIENTIFIC_EXPLANATION_MARKERS):
+        return FactType.SCIENTIFIC
+    return FactType.STABLE
 
 
 def _looks_like_historical_age_question(lower: str) -> bool:
@@ -464,39 +611,172 @@ def rank_evidence(
     settings: Any | None = None,
 ) -> list[EvidenceItem]:
     query = _coerce_query_understanding(question_or_query)
-    authority_boost = float(getattr(settings, "evidence_authority_boost", 0.35))
-    freshness_boost = float(getattr(settings, "evidence_freshness_boost", 0.1))
-    freshness_decay_days = int(getattr(settings, "evidence_freshness_decay_days", 365))
+    retrieval_weight = float(getattr(settings, "evidence_retrieval_weight", 0.30))
+    cross_encoder_weight = float(getattr(settings, "evidence_cross_encoder_weight", 0.25))
+    entity_weight = float(getattr(settings, "evidence_entity_weight", 0.20))
+    authority_weight = float(getattr(settings, "evidence_authority_weight", 0.10))
+    freshness_weight = float(getattr(settings, "evidence_freshness_weight", 0.10))
+    ai_consistency_weight = float(getattr(settings, "evidence_ai_consistency_weight", 0.05))
+    total_weight = max(
+        0.0001,
+        retrieval_weight
+        + cross_encoder_weight
+        + entity_weight
+        + authority_weight
+        + freshness_weight
+        + ai_consistency_weight,
+    )
     ranked: list[EvidenceItem] = []
     for item in items:
-        score = float(item.score or 0.0)
-        if _is_local_source(item):
-            score += 0.25
-            if query.local_file_question:
-                score += 0.35
-        elif _is_web_source(item):
-            score += 0.15
-            if query.requires_date_reconciliation:
-                score += 0.35
-            if _is_official_evidence(item, settings):
-                score += authority_boost
-            if item.published_date:
-                score += freshness_boost
-            if today and item.document_date:
-                age_days = max(0, (today - item.document_date).days)
-                if age_days <= freshness_decay_days:
-                    score += freshness_boost * 0.5
-        elif _is_ai_source(item):
-            score += 0.35
-            if query.primary_type in {QueryType.GENERAL, QueryType.RESEARCH}:
-                score += 0.1
-            if not query.ai_knowledge_allowed_as_final:
-                score -= 0.5
+        retrieval_score = _retrieval_component(item)
+        authority_score = _authority_component(item, settings)
+        cross_encoder_score = _semantic_component(item)
+        entity_score = _entity_match_component(item, query)
+        freshness_score = _freshness_component(item, query, today, settings)
+        ai_consistency_score = _ai_consistency_component(item, query)
+        score = (
+            retrieval_weight * retrieval_score
+            + authority_weight * authority_score
+            + cross_encoder_weight * cross_encoder_score
+            + entity_weight * entity_score
+            + freshness_weight * freshness_score
+            + ai_consistency_weight * ai_consistency_score
+        ) / total_weight
+        if query.local_file_question and _is_local_source(item):
+            score += 0.12
+        if query.fact_type == FactType.DYNAMIC and _is_ai_source(item):
+            score -= 0.35
+        if query.fact_type in {FactType.PERSON_LOOKUP, FactType.COMPANY_LOOKUP} and _is_local_source(item):
+            score += _lookup_local_relevance_adjustment(item)
+        if query.fact_type == FactType.SCIENTIFIC and item.authority in {
+            EvidenceAuthority.UNIVERSITY,
+            EvidenceAuthority.SCIENTIFIC,
+        }:
+            score += 0.06
         item.metadata = dict(item.metadata or {})
-        item.metadata["evidence_score"] = round(score, 4)
-        item.score = score
+        item.metadata.update(
+            {
+                "evidence_retrieval_score": round(retrieval_score, 4),
+                "evidence_authority_score": round(authority_score, 4),
+                "evidence_cross_encoder_score": round(cross_encoder_score, 4),
+                "evidence_semantic_score": round(cross_encoder_score, 4),
+                "evidence_entity_match_score": round(entity_score, 4),
+                "evidence_freshness_score": round(freshness_score, 4),
+                "evidence_ai_consistency_score": round(ai_consistency_score, 4),
+                "evidence_score": round(max(0.0, min(1.0, score)), 4),
+                "evidence_fact_type": query.fact_type.value,
+                "evidence_policy": query.evidence_policy.value,
+                "evidence_authority": item.authority.value,
+            }
+        )
+        item.score = max(0.0, min(1.0, score))
         ranked.append(item)
     return sorted(ranked, key=lambda x: x.score, reverse=True)
+
+
+def _retrieval_component(item: EvidenceItem) -> float:
+    metadata = item.metadata or {}
+    candidates = [
+        metadata.get("retrieval_score"),
+        metadata.get("hybrid_score"),
+        metadata.get("fast_rerank_score"),
+        item.semantic_relevance_score,
+    ]
+    for value in candidates:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        if score > 1.0:
+            score = score / (1.0 + score)
+        return max(0.0, min(1.0, score))
+    return 0.0
+
+
+def _semantic_component(item: EvidenceItem) -> float:
+    metadata = item.metadata or {}
+    for key in ("rerank_score", "cross_encoder_score", "semantic_similarity", "fast_rerank_score"):
+        try:
+            value = float(metadata.get(key))
+        except (TypeError, ValueError):
+            continue
+        if key == "rerank_score":
+            value = 1.0 / (1.0 + pow(2.718281828, -value))
+        return max(0.0, min(1.0, value))
+    return max(0.0, min(1.0, float(item.semantic_relevance_score or 0.0)))
+
+
+def _entity_match_component(item: EvidenceItem, query: QueryUnderstanding) -> float:
+    if query.fact_type not in {FactType.PERSON_LOOKUP, FactType.COMPANY_LOOKUP}:
+        return 0.65
+    terms = [term for term in query.entity_terms if term]
+    if not terms:
+        return 0.65
+    haystack = re.sub(r"\s+", " ", f"{item.title} {item.content}".lower())
+    joined = " ".join(terms)
+    reversed_joined = " ".join(reversed(terms))
+    if joined in haystack or reversed_joined in haystack:
+        return 1.0
+    present = sum(1 for term in terms if re.search(rf"\b{re.escape(term)}\b", haystack))
+    if present == len(terms):
+        return 0.9
+    if present:
+        return max(0.15, present / max(1, len(terms)))
+    return 0.0
+
+
+def _ai_consistency_component(item: EvidenceItem, query: QueryUnderstanding) -> float:
+    if _is_ai_source(item):
+        if query.fact_type in {FactType.DYNAMIC, FactType.NEWS}:
+            return 0.05
+        if query.local_file_question:
+            return 0.10
+        return 0.70
+    return 0.65
+
+
+def _authority_component(item: EvidenceItem, settings: Any | None = None) -> float:
+    if _is_official_evidence(item, settings):
+        return 1.0
+    return {
+        EvidenceAuthority.INTERNAL: 0.90,
+        EvidenceAuthority.UNIVERSITY: 0.95,
+        EvidenceAuthority.SCIENTIFIC: 0.95,
+        EvidenceAuthority.WIKIPEDIA: 0.70,
+        EvidenceAuthority.NEWS: 0.80,
+        EvidenceAuthority.BLOG: 0.40,
+        EvidenceAuthority.SOCIAL_MEDIA: 0.25,
+        EvidenceAuthority.MODEL: 0.60,
+        EvidenceAuthority.STANDARD: 0.55,
+        EvidenceAuthority.OFFICIAL: 1.00,
+    }.get(item.authority, 0.55)
+
+
+def _freshness_component(
+    item: EvidenceItem,
+    query: QueryUnderstanding,
+    today: date | None,
+    settings: Any | None = None,
+) -> float:
+    if query.fact_type not in {FactType.DYNAMIC, FactType.NEWS} and not query.requires_date_reconciliation:
+        return 0.65
+    if _is_ai_source(item):
+        return 0.05
+    if not item.document_date:
+        return 0.45 if _is_web_source(item) else 0.25
+    today = today or date.today()
+    freshness_decay_days = int(getattr(settings, "evidence_freshness_decay_days", 365))
+    age_days = max(0, (today - item.document_date).days)
+    return max(0.0, min(1.0, 1.0 - (age_days / max(1, freshness_decay_days))))
+
+
+def _lookup_local_relevance_adjustment(item: EvidenceItem) -> float:
+    text = f"{item.title} {item.content}".lower()
+    if any(marker in text for marker in ("passport", "passp", "identity card", "date of birth", "place of birth")):
+        return -0.18
+    if any(marker in text for marker in ("thesis", "prof", "professor", "supervisor", "advisor", "university", "publication", "cv")):
+        return 0.08
+    return 0.0
 
 
 def _is_official_evidence(item: EvidenceItem, settings: Any | None = None) -> bool:
@@ -566,6 +846,7 @@ def resolve_evidence_conflicts(
         and web_answer
         and _normalized_answer(local_answer) != _normalized_answer(web_answer)
     )
+    top = ranked_evidence[0]
     if query.requires_date_reconciliation and EvidenceSourceType.WEB in kinds:
         winner = EvidenceSourceType.WEB
         note = "Newer reliable web evidence wins for current or time-sensitive facts."
@@ -574,10 +855,14 @@ def resolve_evidence_conflicts(
         winner = EvidenceSourceType.LOCAL_CHUNK
         note = "Local files win for private or uploaded-document facts."
         confidence = "high"
-    elif EvidenceSourceType.WEB in kinds:
+    elif top.source_type == EvidenceSourceType.LOCAL_CHUNK:
+        winner = EvidenceSourceType.LOCAL_CHUNK
+        note = "Ranked local evidence is the strongest available evidence."
+        confidence = "high" if top.score >= 0.70 else "medium"
+    elif top.source_type == EvidenceSourceType.WEB:
         winner = EvidenceSourceType.WEB
-        note = "Web evidence is the strongest available evidence."
-        confidence = "medium"
+        note = "Ranked web evidence is the strongest available evidence."
+        confidence = "high" if top.score >= 0.72 else "medium"
     else:
         winner = EvidenceSourceType.AI_KNOWLEDGE
         note = "AI knowledge is the strongest available evidence; it is not externally verified."

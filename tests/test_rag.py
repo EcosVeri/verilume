@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from verilume.core.generation import (
     LOCAL_UNKNOWN,
@@ -10,6 +13,7 @@ from verilume.core.generation import (
     GenerationError,
 )
 from verilume.core.schemas import ChatMessage, LocalSource, WebSource
+from verilume.core.search_planner import ResolvedSearchPlan
 from verilume.rag import (
     LOCAL_FILE_NOT_FOUND,
     GenerationStopped,
@@ -42,6 +46,17 @@ class FakeRetriever:
     def search(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         return list(self.sources)
+
+
+class CorpusBrowsingRetriever(FakeRetriever):
+    def __init__(self, sources, corpus_sources):
+        super().__init__(sources)
+        self.corpus_sources = list(corpus_sources)
+        self.corpus_calls: list[dict] = []
+
+    def sample_sources_by_document(self, **kwargs):
+        self.corpus_calls.append(kwargs)
+        return list(self.corpus_sources)
 
 
 class SequentialLocalRetriever:
@@ -247,6 +262,7 @@ class RAGRoutingTests(unittest.TestCase):
         rag = self._make_rag(
             local_answer="Econometrics applies statistical methods to economic data. [S1]",
             model_answer="Econometrics applies statistical methods to economic data.",
+            web_answer="Econometrics applies statistical methods to economic data, as stated in the local note [S1].",
             local_sources=[local_source],
         )
         rag.settings = AppSettings(hf_token="token", enable_web_search=False)
@@ -258,6 +274,7 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertTrue(result.diagnostics["used_local"])
         self.assertTrue(result.diagnostics["used_model_knowledge"])
         self.assertEqual(result.diagnostics["evidence_winner"], "hybrid")
+        self.assertEqual(len(rag.generator.final_calls), 1)
         self.assertEqual(result.diagnostics["answer_verification_status"], "verified")
 
     def test_repeated_question_uses_response_cache(self) -> None:
@@ -367,8 +384,9 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("Keir Starmer", result.diagnostics["web_queries"][0])
         self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertGreater(len(rag.retriever.calls), 0)
-        self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.diagnostics["parallel_model_with_web"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["parallel_model_with_web"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
         self.assertEqual(rag.generator.final_calls, [])
         self.assertTrue(result.used_web)
         self.assertIn("Keir Starmer resigned", result.answer)
@@ -434,8 +452,9 @@ class RAGRoutingTests(unittest.TestCase):
         )
         self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertGreater(len(rag.retriever.calls), 0)
-        self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.diagnostics["parallel_model_with_web"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["parallel_model_with_web"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
 
     def test_country_memory_rewrites_age_at_presidency_followup(self) -> None:
         rag = self._make_rag(
@@ -907,6 +926,157 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
         self.assertEqual(rag.generator.model_calls, [])
 
+    def test_named_birthplace_question_prefers_local_passport_evidence(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-birth-place",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX JORDAN SAMPLE "
+                "Date of birth 01.01.2000 Sexe Sex 6. Lieu de naisbance/ Place of blrth M SAMPLETOWN "
+                "7. Date de d6livrance/ Date of lssue 3t.03.2022"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("Where was Alex Jordan Sample born?")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Sampletown", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_birthplace_question_based_on_passport_answers_directly(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-birth-place-explicit",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX JORDAN SAMPLE "
+                "Date of birth 01.01.2000 Sexe Sex 6. Lieu de naisbance/ Place of blrth M SAMPLETOWN "
+                "7. Date de d6livrance/ Date of lssue 3t.03.2022"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("Where was Alex Jordan Sample born based on the passport")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Sampletown", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_origin_question_prefers_local_passport_evidence_before_model(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-origin",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name ALEX JORDAN SAMPLE "
+                "Nationality NIGERIAN 4. Date of birth 01.01.2000 "
+                "Place of birth SAMPLETOWN"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("Where is Alex from")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Nigeria", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_birthplace_question_uses_passport_when_only_one_name_token_matches(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-partial-name",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name MORGAN VALE "
+                "Date of birth 01.01.2000 Place of birth SAMPLETOWN"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("Where was Robin Morgan born?")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Sampletown", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertEqual(rag.generator.model_calls, [])
+
+    def test_bare_reordered_name_can_use_passport_identity_evidence(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-reordered-name",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name MORGAN VALE "
+                "Date of birth 01.01.2000 Place of birth SAMPLETOWN"
+            ),
+            score=0.94,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Model answer that should not be used.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+        rag.retriever = FakeRetriever([passport_source])
+
+        result = rag.ask("Vale Robin Morgan")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["sample_passport.pdf"])
+        self.assertTrue(result.diagnostics["local_sufficient"])
+        self.assertEqual(rag.generator.model_calls, [])
+
     def test_bare_person_query_resets_government_memory_and_uses_person_plan(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
@@ -984,8 +1154,9 @@ class RAGRoutingTests(unittest.TestCase):
         )
         self.assertFalse(result.diagnostics["local_retrieval_skipped"])
         self.assertGreater(len(rag.retriever.calls), 0)
-        self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.diagnostics["parallel_model_with_web"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["parallel_model_with_web"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
 
     def test_country_memory_expands_source_followup(self) -> None:
         rag = self._make_rag(
@@ -1149,6 +1320,134 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(rag.generator.model_calls, [])
         self.assertEqual(rag.web_search.queries, [])
 
+    def test_local_retrieval_runs_even_when_plan_prefers_model_or_web(self) -> None:
+        class ModelFirstPlanner:
+            def plan(self, interpretation):
+                return ResolvedSearchPlan(
+                    intent="public_knowledge",
+                    need_local=False,
+                    need_web=False,
+                    need_model=True,
+                )
+
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Regression models relationships between variables.",
+            local_sources=[],
+        )
+        rag.search_planner = ModelFirstPlanner()
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("What is regression?")
+
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertFalse(result.diagnostics["local_retrieval_skipped"])
+        self.assertTrue(result.diagnostics["local_retrieval_forced_by_policy"])
+        self.assertEqual(len(rag.generator.model_calls), 1)
+        self.assertIn("Regression", result.answer)
+
+    def test_explicit_filename_summary_uses_local_evidence(self) -> None:
+        diploma_source = LocalSource(
+            label="S1",
+            document="Damian_diploma.pdf",
+            page=1,
+            chunk_id="diploma-1",
+            text="Damian Mingo Ndiwago completed the diploma in statistics with distinction.",
+            score=0.91,
+        )
+        rag = self._make_rag(
+            local_answer="The diploma says Damian completed statistics with distinction.",
+            model_answer="Model answer that should not be used.",
+            local_sources=[diploma_source],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("Summarise Damian_diploma.pdf")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("statistics", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["Damian_diploma.pdf"])
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertEqual(len(rag.generator.local_calls), 1)
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(rag.web_search.queries, [])
+
+    def test_examples_from_local_files_uses_local_evidence(self) -> None:
+        example_source = LocalSource(
+            label="S1",
+            document="examples.pdf",
+            page=2,
+            chunk_id="examples-2",
+            text="The local file gives examples of regression using housing prices and income.",
+            score=0.88,
+        )
+        rag = self._make_rag(
+            local_answer="One local example is regression using housing prices and income [S1].",
+            model_answer="Model answer that should not be used.",
+            local_sources=[example_source],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("Give examples from the local files")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("housing prices", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["examples.pdf"])
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertEqual(len(rag.generator.local_calls), 1)
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(rag.web_search.queries, [])
+
+    def test_local_inventory_question_answers_from_document_stats(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "documents"
+            chroma_dir = root / "chroma"
+            manifest_path = root / "manifest.json"
+            docs_dir.mkdir()
+            diploma = docs_dir / "Damian_diploma.pdf"
+            notes = docs_dir / "notes.txt"
+            diploma.write_bytes(b"%PDF-1.4\n")
+            notes.write_text("Local notes", encoding="utf-8")
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        str(diploma): {"pdf_pages": 3, "chunks": 3},
+                        str(notes): {"pdf_pages": 0, "chunks": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            rag = self._make_rag(
+                local_answer=LOCAL_UNKNOWN,
+                model_answer="Model answer that should not be used.",
+                local_sources=[],
+            )
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=docs_dir,
+                chroma_dir=chroma_dir,
+                manifest_path=manifest_path,
+            )
+
+            result = rag.ask("how many local files/documents are there")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("2 uploaded documents", result.answer)
+        self.assertIn("4 indexed chunks", result.answer)
+        self.assertIn("3 PDF pages", result.answer)
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(rag.web_search.queries, [])
+
     def test_local_file_fact_question_answers_from_local_evidence_without_model_or_web(self) -> None:
         certificate_source = LocalSource(
             label="S1",
@@ -1221,16 +1520,16 @@ class RAGRoutingTests(unittest.TestCase):
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
             model_answer="Econometrics applies statistical methods to economic data.",
-            web_answer="Econometrics combines statistics and economics [W1]",
+            web_answer="Econometrics applies statistical methods to economic data and combines statistics and economics [W1]",
         )
         result = rag.ask("What is econometrics?")
 
-        self.assertEqual(result.confidence, "model-only")
-        self.assertFalse(result.used_web)
+        self.assertTrue(result.used_web)
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertEqual(result.diagnostics["evidence_winner"], "hybrid")
         self.assertIn("Econometrics", result.answer)
         self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertEqual(result.web_sources, [])
-        self.assertEqual(rag.web_search.queries, [])
+        self.assertGreater(len(rag.web_search.queries), 0)
 
     def test_model_knowledge_and_web_search_run_in_parallel_after_local_gap(self) -> None:
         rag = self._make_rag(
@@ -1292,6 +1591,165 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertIn("Econometrics", result.answer)
         self.assertIn("not externally verified", result.answer)
         self.assertEqual(result.web_sources, [])
+
+    def test_model_answer_with_us_spelling_answers_uk_spelling_query_before_web(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer=(
+                "Optimization is the process of making a system, design, or decision "
+                "as effective as possible."
+            ),
+            web_answer="Optimization is the process of making a system, design, or decision as effective as possible [W1]",
+            local_sources=[],
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="optimization - Glossary",
+                    url="https://example.gov/glossary/fiscal-optimization",
+                    content="Optimization is the process of making a system, design, or decision as effective as possible.",
+                )
+            ],
+        )
+
+        result = rag.ask("what is optimisation")
+
+        self.assertTrue(result.used_web)
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertGreater(len(rag.web_search.queries), 0)
+        self.assertIn("Optimization", result.answer)
+        self.assertEqual(result.local_sources, [])
+
+    def test_generic_definition_filters_private_passport_local_source(self) -> None:
+        passport_source = LocalSource(
+            label="S1",
+            document="sample_passport.pdf",
+            page=1,
+            chunk_id="passport-private",
+            text=(
+                "Passport REPUBLIC OF SAMPLE Name MORGAN VALE "
+                "Date of birth 01.01.2000 Place of birth SAMPLETOWN Passport number SAMPLE123"
+            ),
+            score=0.99,
+        )
+        rag = self._make_rag(
+            local_answer="The local passport text is the answer [S1].",
+            model_answer="Optimization is the process of finding the best feasible option.",
+            local_sources=[passport_source],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("define optimisation")
+
+        self.assertEqual(result.confidence, "model-only")
+        self.assertFalse(result.used_web)
+        self.assertEqual(result.local_sources, [])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertIn("Optimization", result.answer)
+        self.assertNotIn("passport", result.answer.lower())
+        self.assertNotIn("[S1]", result.answer)
+
+    def test_local_and_model_gap_automatically_uses_web_when_enabled(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="I couldn't find any specific information about Florian Felice.",
+            web_answer="Florian Felice is described in the web evidence [W1].",
+            local_sources=[],
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="Florian Felice profile",
+                    url="https://example.com/florian-felice",
+                    content="Florian Felice is described in this profile.",
+                )
+            ],
+        )
+
+        result = rag.ask("Florian Felice")
+
+        self.assertTrue(result.used_web)
+        self.assertEqual(result.diagnostics["web_reason"], "standard_static_hybrid")
+        self.assertFalse(result.diagnostics["model_sufficient"])
+        self.assertEqual(len(rag.generator.model_calls), 1)
+        self.assertGreater(len(rag.web_search.queries), 0)
+        self.assertIn("[W1]", result.answer)
+
+    def test_low_confidence_miss_is_not_reused_after_web_is_enabled(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer=MODEL_UNKNOWN,
+            local_sources=[],
+            web_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        first = rag.ask("Florian Felice")
+
+        rag.settings = AppSettings(
+            hf_token="token",
+            tavily_api_key="key",
+            enable_web_search=True,
+        )
+        rag.web_search = FakeWebSearch(
+            [
+                WebSource(
+                    label="W1",
+                    title="Florian Felice profile",
+                    url="https://example.com/florian-felice",
+                    content="Florian Felice is described in this profile.",
+                )
+            ]
+        )
+        second = rag.ask("Florian Felice")
+
+        self.assertEqual(first.confidence, "low")
+        self.assertNotIn("cache_hit", second.diagnostics)
+        self.assertTrue(second.used_web)
+        self.assertIn("[W1]", second.answer)
+
+    def test_model_knowledge_answers_stable_identity_when_web_is_disabled(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Ada Lovelace was born on 10 December 1815.",
+            local_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("When was Ada Lovelace born?")
+
+        self.assertEqual(result.confidence, "model-only")
+        self.assertFalse(result.used_web)
+        self.assertIn("Ada Lovelace", result.answer)
+        self.assertIn("10 December 1815", result.answer)
+        self.assertEqual(result.local_sources, [])
+        self.assertEqual(result.web_sources, [])
+        self.assertEqual(len(rag.generator.model_calls), 1)
+        self.assertEqual(rag.web_search.queries, [])
+
+    def test_identity_fact_question_ignores_name_only_local_hits_before_model(self) -> None:
+        name_only_source = LocalSource(
+            label="S1",
+            document="ada-notes.pdf",
+            page=1,
+            chunk_id="ada-notes",
+            text="Ada Lovelace wrote notes on the Analytical Engine.",
+            score=0.92,
+            metadata={"query_overlap": 2, "fast_rerank_score": 0.91},
+        )
+        rag = self._make_rag(
+            local_answer="The local file discusses Ada Lovelace notes [S1].",
+            model_answer="Ada Lovelace was born on 10 December 1815.",
+            local_sources=[name_only_source],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("When was Ada Lovelace born?")
+
+        self.assertEqual(result.confidence, "model-only")
+        self.assertFalse(result.used_web)
+        self.assertEqual(result.local_sources, [])
+        self.assertIn("10 December 1815", result.answer)
+        self.assertNotIn("[S1]", result.answer)
+        self.assertEqual(len(rag.generator.model_calls), 1)
 
     def test_model_knowledge_answers_stable_geography_when_web_is_disabled(self) -> None:
         rag = self._make_rag(
@@ -1362,8 +1820,10 @@ class RAGRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.confidence, "low")
         self.assertFalse(result.used_web)
-        self.assertTrue(result.diagnostics["model_knowledge_available"])
-        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["model_knowledge_available"])
+        self.assertFalse(result.diagnostics["used_model_knowledge"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
         self.assertNotIn("Sam Altman", result.answer)
         self.assertIn("AI knowledge is not reliable enough for current facts", result.answer)
 
@@ -1371,7 +1831,7 @@ class RAGRoutingTests(unittest.TestCase):
         rag = self._make_rag(
             local_answer="Local econometrics note [S1].",
             model_answer="Model econometrics background.",
-            web_answer="Web econometrics source [W1].",
+            web_answer="Local econometrics note with model econometrics background and a web econometrics source [S1] [W1].",
             local_sources=[LOCAL_SOURCE],
             web_sources=[
                 WebSource(
@@ -1386,12 +1846,13 @@ class RAGRoutingTests(unittest.TestCase):
         result = rag.ask("Search the web about econometrics")
 
         self.assertTrue(result.used_web)
-        self.assertFalse(result.diagnostics["used_local"])
-        self.assertFalse(result.diagnostics["used_model_knowledge"])
+        self.assertTrue(result.diagnostics["used_local"])
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
         self.assertTrue(result.diagnostics["used_web"])
-        self.assertNotIn("local", result.diagnostics["evidence_streams"])
+        self.assertIn("local", result.diagnostics["evidence_streams"])
+        self.assertIn("model_knowledge", result.diagnostics["evidence_streams"])
         self.assertIn("web", result.diagnostics["evidence_streams"])
-        self.assertEqual(result.diagnostics["evidence_winner"], "web")
+        self.assertEqual(result.diagnostics["evidence_winner"], "hybrid")
 
     def test_web_fallback_filters_to_used_web_citations(self) -> None:
         rag = self._make_rag(
@@ -1871,6 +2332,72 @@ class RAGRoutingTests(unittest.TestCase):
             any("Recreation, Parks & Tourism" in source.title for source in result.web_sources)
         )
 
+    def test_person_lookup_discards_local_chunk_about_different_named_person(self) -> None:
+        contaminated = LocalSource(
+            label="S1",
+            document="people.pdf",
+            page=1,
+            chunk_id="gabriella-profile",
+            text=(
+                "Gabriella Vinco is a Doctoral Researcher at the University of Luxembourg. "
+                "The same department also mentions Christophe Ley in an acknowledgements list."
+            ),
+            score=0.98,
+        )
+        correct = WebSource(
+            label="W1",
+            title="Christophe Ley - University of Luxembourg",
+            url="https://www.uni.lu/fstm-en/people/christophe-ley",
+            content="Christophe Ley is Associate Professor in Mathematics at the University of Luxembourg.",
+        )
+        rag = self._make_rag(
+            local_answer="Gabriella Vinco is a Doctoral Researcher [S1].",
+            model_answer=MODEL_UNKNOWN,
+            local_sources=[contaminated],
+            web_sources=[correct],
+        )
+
+        result = rag.ask("Christophe Ley")
+
+        self.assertEqual(result.local_sources, [])
+        self.assertTrue(result.used_web)
+        self.assertEqual([source.label for source in result.web_sources], ["W1"])
+        self.assertIn("Christophe Ley", result.answer)
+        self.assertNotIn("Gabriella", result.answer)
+
+    def test_person_lookup_discards_regression_document_even_when_name_is_incidental(self) -> None:
+        regression = LocalSource(
+            label="S1",
+            document="E1_MultipleRegressionModel.pdf",
+            page=8,
+            chunk_id="regression-8",
+            text=(
+                "Multiple regression exercise. PRICE = beta0 + beta1M2 + beta2AGE + beta3DIS. "
+                "Example prepared by Gabriella Vinco for class discussion."
+            ),
+            score=0.99,
+        )
+        profile = WebSource(
+            label="W1",
+            title="Gabriella Vinco - University profile",
+            url="https://www.uni.lu/example/gabriella-vinco",
+            content="Gabriella Vinco is a researcher at the University of Luxembourg.",
+        )
+        rag = self._make_rag(
+            local_answer="The regression document says PRICE = beta0 + beta1M2 + beta2AGE + beta3DIS [S1].",
+            model_answer=MODEL_UNKNOWN,
+            local_sources=[regression],
+            web_sources=[profile],
+        )
+
+        result = rag.ask("Gabriella Vinco")
+
+        self.assertEqual(result.local_sources, [])
+        self.assertTrue(result.used_web)
+        self.assertIn("Gabriella Vinco", result.answer)
+        self.assertNotIn("PRICE", result.answer)
+        self.assertNotIn("regression", result.answer.lower())
+
     def test_entity_lookup_uses_fast_extractive_synthesis(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
@@ -2014,8 +2541,9 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(result.confidence, "current-information")
         self.assertTrue(result.used_web)
         self.assertIn("Luc Frieden", result.answer)
-        self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.diagnostics["parallel_model_with_web"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["parallel_model_with_web"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
         self.assertFalse(result.diagnostics["used_model_knowledge"])
 
     def test_generic_country_president_query_continues_to_web_after_local_miss(self) -> None:
@@ -2593,6 +3121,147 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual([source.document for source in result.local_sources], ["language_certificate.pdf"])
         self.assertIn("language_certificate.pdf", result.answer)
         self.assertNotIn("sas_certification.pdf", result.answer)
+
+    def test_local_corpus_summary_browses_each_indexed_document(self) -> None:
+        passport = LocalSource(
+            label="S1",
+            document="DamianMingopassport .pdf",
+            page=1,
+            chunk_id="passport-1",
+            text="Passport details with name, nationality, date of birth and place of issue.",
+            score=1.0,
+        )
+        diploma = LocalSource(
+            label="S2",
+            document="Damian_diploma.pdf",
+            page=1,
+            chunk_id="diploma-1",
+            text="This letter confirms that Damian Mingo Ndiwago defended his doctoral thesis on 26 September 2024.",
+            score=1.0,
+        )
+        regression = LocalSource(
+            label="S3",
+            document="E1_MultipleRegressionModel.pdf",
+            page=1,
+            chunk_id="regression-1",
+            text="Applied Time Series Analysis and Forecasting exercise about a multiple regression model using Stata.",
+            score=1.0,
+        )
+        rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
+        rag.retriever = CorpusBrowsingRetriever([], [passport, diploma, regression])
+
+        result = rag.ask("summarise the documents")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertEqual(
+            [source.document for source in result.local_sources],
+            ["DamianMingopassport .pdf", "Damian_diploma.pdf", "E1_MultipleRegressionModel.pdf"],
+        )
+        self.assertIn("DamianMingopassport .pdf", result.answer)
+        self.assertIn("Damian_diploma.pdf", result.answer)
+        self.assertIn("E1_MultipleRegressionModel.pdf", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertIn("[S2]", result.answer)
+        self.assertIn("[S3]", result.answer)
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertTrue(rag.retriever.corpus_calls)
+
+    def test_content_of_files_browses_local_corpus(self) -> None:
+        local_source = LocalSource(
+            label="S1",
+            document="course_notes.pdf",
+            page=3,
+            chunk_id="course-3",
+            text="These course notes explain regression coefficients and fitted values.",
+            score=1.0,
+        )
+        rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
+        rag.retriever = CorpusBrowsingRetriever([], [local_source])
+
+        result = rag.ask("what is the content of the files")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertEqual([source.document for source in result.local_sources], ["course_notes.pdf"])
+        self.assertIn("course_notes.pdf", result.answer)
+        self.assertIn("[S1]", result.answer)
+
+    def test_docs_in_database_summary_browses_local_corpus(self) -> None:
+        local_source = LocalSource(
+            label="S1",
+            document="database_notes.pdf",
+            page=1,
+            chunk_id="database-notes-1",
+            text="These indexed notes summarize local database content about regression models.",
+            score=1.0,
+        )
+        rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
+        rag.retriever = CorpusBrowsingRetriever([], [local_source])
+
+        result = rag.ask("summarise the docs in the database")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertEqual([source.document for source in result.local_sources], ["database_notes.pdf"])
+        self.assertIn("database_notes.pdf", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertEqual(result.diagnostics["evidence_policy"], "local_only")
+
+    def test_spaced_data_base_inventory_uses_local_stats(self) -> None:
+        rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
+
+        result = rag.ask("how many files are in the data base")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("local Verilume library", result.answer)
+        self.assertEqual(len(rag.generator.model_calls), 0)
+
+    def test_person_lookup_can_answer_from_verified_local_profile_when_model_refuses(self) -> None:
+        local_source = LocalSource(
+            label="S1",
+            document="profile.pdf",
+            page=1,
+            chunk_id="damian-profile-1",
+            text="Damian Mingo Ndiwago is a doctoral researcher at the University of Luxembourg.",
+            score=0.88,
+        )
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer=MODEL_UNKNOWN,
+            local_sources=[local_source],
+            web_sources=[],
+        )
+        rag.settings = AppSettings(hf_token="token", enable_web_search=False)
+
+        result = rag.ask("Who is Damian Mingo Ndiwago?")
+
+        self.assertFalse(result.used_web)
+        self.assertEqual([source.document for source in result.local_sources], ["profile.pdf"])
+        self.assertIn("Damian Mingo Ndiwago", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertNotIn("could not answer", result.answer.lower())
+
+    def test_phd_defense_date_answers_from_local_diploma(self) -> None:
+        thesis_source = LocalSource(
+            label="S1",
+            document="Damian_diploma.pdf",
+            page=1,
+            chunk_id="diploma-defense",
+            text="This letter is to confirm that Mr Damian MINGO NDIWAGO has defended his doctoral thesis on 26 September 2024.",
+            score=0.93,
+        )
+        rag = self._make_rag(local_answer=LOCAL_UNKNOWN, model_answer=MODEL_UNKNOWN, local_sources=[thesis_source])
+
+        result = rag.ask("when did Damian Mingo defend his phd")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertEqual([source.document for source in result.local_sources], ["Damian_diploma.pdf"])
+        self.assertIn("26 September 2024", result.answer)
+        self.assertIn("[S1]", result.answer)
+        self.assertEqual(len(rag.generator.model_calls), 0)
 
     def test_identity_lookup_rejects_noisy_comment_search_results(self) -> None:
         rag = self._make_rag(

@@ -39,6 +39,8 @@ from verilume.core.evidence import (
     build_final_answer_payload,
     classify_question,
     evidence_from_sources,
+    EvidencePolicy,
+    FactType,
     rank_evidence,
     reconcile_dates,
     resolve_evidence_conflicts,
@@ -67,6 +69,7 @@ from verilume.core.web_search import (
     normalize_web_url_key,
 )
 from verilume.settings import AppSettings, ensure_app_dirs
+from verilume.utils.document_stats import collect_document_stats
 
 MAX_WEB_SOURCES_TO_SHOW = 6
 WEB_QUERY_FANOUT_LIMIT = 5
@@ -149,8 +152,11 @@ PERSON_NAME_SUFFIXES = {"ii", "iii", "iv", "jr", "sr"}
 INSUFFICIENT_MARKERS = (
     "web_search_needed", LOCAL_UNKNOWN.lower(), MODEL_UNKNOWN.lower(), "i don't know",
     "i do not know", "cannot answer", "can't answer", "could not answer", "could not verify",
-    "not enough information", "insufficient information", "insufficient context",
+    "could not find", "couldn't find", "couldn’t find", "could not locate",
+    "couldn't locate", "couldn’t locate", "not enough information", "insufficient information",
+    "insufficient context", "no specific information", "no information about",
     "unable to determine", "not provided in the context", "not in the local",
+    "without more context", "without more information",
 )
 WEB_REQUEST_MARKERS = (
     "search web", "search the web", "web search", "use web", "use the web", "look up",
@@ -160,8 +166,9 @@ WEB_REQUEST_MARKERS = (
 )
 LOCAL_FILE_MARKERS = (
     "in the file", "in the document", "in my file", "in my document",
+    "in the docs", "in my docs", "the docs", "my docs",
     "in the local file", "in the local files", "indexed local file", "indexed local files",
-    "indexed local documents", "in the database", "local database", "knowledge base",
+    "indexed local documents", "in the database", "in the data base", "local database", "local data base", "knowledge base",
     "uploaded file", "uploaded files", "uploaded document", "uploaded documents", "in my files",
     "in the files", "in my documents", "which document", "which file", "what document", "what file",
 )
@@ -317,16 +324,27 @@ IDENTITY_LOCAL_NEGATIVE_MARKERS = (
     "certification",
     "course notes",
     "exam",
+    "exercise",
     "invoice",
     "language test",
     "lecture notes",
+    "multiple regression",
     "passport",
     "payment",
+    "price =",
     "receipt",
+    "regression",
     "seminar",
     "sproochentest",
     "tax",
     "ticket",
+    "visa",
+)
+PRIVATE_IDENTITY_DOCUMENT_MARKERS = (
+    "passport",
+    "identity card",
+    "id card",
+    "residence permit",
     "visa",
 )
 IDENTITY_WEB_CLUSTER_MARKERS = (
@@ -503,7 +521,7 @@ class VerilumeRAG:
         on_stage: Callable[[str], None] | None = None,
     ) -> RAGResponse:
         history = history or []
-        cache_key = _response_cache_key(question, history, conversation_state)
+        cache_key = _response_cache_key(question, history, conversation_state, self.settings)
         if should_stop is None:
             cached = self._cached_response(cache_key)
             if cached is not None:
@@ -627,23 +645,43 @@ class VerilumeRAG:
             _is_contextual_personal_document_fact_query(original_question, conversation.state)
             or _is_contextual_personal_document_fact_query(question, conversation.state)
         )
+        identity_attribute_local_fact_question = (
+            _is_identity_attribute_local_fact_query(original_question, conversation.state)
+            or _is_identity_attribute_local_fact_query(question, conversation.state)
+        )
         personal_document_fact_question = (
             _is_personal_document_fact_query(original_question)
             or _is_personal_document_fact_query(question)
             or contextual_personal_document_fact_question
         )
-        local_file_question = (
+        local_corpus_overview_question = (
+            _is_local_corpus_overview_request(original_question)
+            or _is_local_corpus_overview_request(question)
+        )
+        thesis_defense_local_fact_question = (
+            _is_thesis_defense_date_question(original_question)
+            or _is_thesis_defense_date_question(question)
+        )
+        explicit_local_file_question = (
             self._is_local_file_question(original_question)
             or self._is_local_file_question(question)
             or interpretation.intent == "local_document"
             or personal_document_fact_question
+            or local_corpus_overview_question
+            or thesis_defense_local_fact_question
         )
         local_file_fact_question = (
             _should_answer_local_file_fact_from_evidence(original_question)
             or _should_answer_local_file_fact_from_evidence(question)
             or personal_document_fact_question
+            or identity_attribute_local_fact_question
+            or thesis_defense_local_fact_question
         )
-        query_understanding.local_file_question = local_file_question
+        local_file_search_question = explicit_local_file_question or identity_attribute_local_fact_question
+        query_understanding.local_file_question = explicit_local_file_question
+        if explicit_local_file_question:
+            query_understanding.fact_type = FactType.LOCAL_DOCUMENT
+            query_understanding.evidence_policy = EvidencePolicy.LOCAL_ONLY
         identity_tokens = _identity_tokens(question)
 
         query = question
@@ -683,7 +721,10 @@ class VerilumeRAG:
                 normalized_entities=list(normalize_query(query).entities),
                 query_type=query_understanding.primary_type.value,
                 query_types=[item.value for item in query_understanding.types],
+                fact_type=query_understanding.fact_type.value,
+                evidence_policy=query_understanding.evidence_policy.value,
                 local_file_question=query_understanding.local_file_question,
+                identity_attribute_question=identity_attribute_local_fact_question,
                 time_sensitive=time_sensitive,
                 requires_web_validation=query_understanding.requires_web_validation,
                 requires_date_reconciliation=time_sensitive,
@@ -704,12 +745,15 @@ class VerilumeRAG:
         else:
             web_queries = _dedupe_web_queries([*semantic_plan.search_queries, *expanded_web_queries])
         diagnostics["web_queries"] = web_queries
-        skip_local_retrieval = (not search_plan.need_local) or _should_skip_local_retrieval(
+        planned_skip_local_retrieval = _should_skip_local_retrieval(
             question,
             query_understanding,
-            local_file_question,
+            local_file_search_question,
         )
-        local_queries = _local_search_queries(query, identity_tokens, local_file_question)
+        skip_local_retrieval = False
+        diagnostics["local_retrieval_forced_by_policy"] = bool(not search_plan.need_local)
+        diagnostics["local_retrieval_policy_would_skip"] = planned_skip_local_retrieval
+        local_queries = _local_search_queries(query, identity_tokens, local_file_search_question)
         diagnostics["local_queries"] = local_queries
         diagnostics["local_retrieval_skipped"] = skip_local_retrieval
         diagnostics["local_retrieval_attempted"] = not skip_local_retrieval
@@ -719,21 +763,53 @@ class VerilumeRAG:
             local_sources = []
         else:
             _emit_stage(on_stage, "Searching local evidence...")
-            local_sources = self._search_local_sources(query, identity_tokens, local_file_question)
+            local_sources = self._search_local_sources(query, identity_tokens, local_file_search_question)
         _check_generation_stop(should_stop)
+        if local_corpus_overview_question:
+            corpus_sources = self._local_corpus_sources()
+            if corpus_sources:
+                diagnostics["local_corpus_browse"] = True
+                diagnostics["local_corpus_count"] = len(corpus_sources)
+                local_sources = _merge_local_sources(
+                    corpus_sources,
+                    local_sources,
+                    limit=max(self.settings.retriever_k * 8, len(corpus_sources)),
+                )
+        local_identity_fact_supported = bool(
+            identity_attribute_local_fact_question and _local_sources_support_identity_fact(local_sources)
+        )
+        if identity_attribute_local_fact_question and local_sources and not local_identity_fact_supported:
+            diagnostics["local_identity_fact_filtered"] = len(local_sources)
+            local_sources = []
         diagnostics["local_count"] = len(local_sources)
         diagnostics["best_local_score"] = _best_local_score(local_sources)
         strong_local = _local_evidence_looks_strong(local_sources, self.settings)
         diagnostics["local_evidence_strong"] = strong_local
+        local_file_answer_question = bool(
+            explicit_local_file_question
+            or personal_document_fact_question
+            or contextual_personal_document_fact_question
+            or local_identity_fact_supported
+        )
+        query_understanding.local_file_question = local_file_answer_question
+        diagnostics["local_file_question"] = local_file_answer_question
+        diagnostics["local_identity_fact_supported"] = local_identity_fact_supported
         _emit_stage(on_stage, f"✓ Local retrieval ({len(local_sources)} matches)")
 
-        if local_file_question and (
-            not local_sources or _should_answer_local_file_question_directly(query)
+        if _is_local_inventory_question(original_question) or _is_local_inventory_question(question):
+            response = self._answer_local_inventory_question(question, diagnostics)
+            return _attach_conversation_state(response, conversation.state, original_question, question)
+
+        if explicit_local_file_question and (
+            not local_sources
+            or _should_answer_local_file_question_directly(query)
+            or _is_local_summary_request(query)
+            or local_corpus_overview_question
         ):
             response = self._answer_local_file_question(query, local_sources, diagnostics, on_stage)
             return _attach_conversation_state(response, conversation.state, original_question, question)
 
-        if local_file_question and local_sources and local_file_fact_question:
+        if local_file_answer_question and local_sources and local_file_fact_question:
             _emit_stage(on_stage, "Answering from local file evidence...")
             ranked_evidence, _ = _add_evidence_diagnostics(
                 diagnostics,
@@ -778,7 +854,7 @@ class VerilumeRAG:
                     query,
                     local_answer,
                     local_sources,
-                    local_file_question=local_file_question,
+                    local_file_question=local_file_answer_question,
                 )
                 local_sufficient = self._is_sufficient(local_answer) and local_answer_relevant
             except GenerationError as exc:
@@ -805,26 +881,62 @@ class VerilumeRAG:
             local_answer_relevant = True
             local_sufficient = self._is_sufficient(local_answer)
             diagnostics["local_identity_fallback"] = True
-
-        prefer_local_answer = bool(local_sufficient and not current_or_web and not force_web)
-        diagnostics["prefer_local_answer"] = prefer_local_answer
-        should_use_web = _should_use_web(
-            question=question,
-            force_web=force_web or planned_web,
-            web_enabled=self.settings.enable_web_search,
-            query_understanding=query_understanding,
-        ) or bool(generation_error and web_ready)
-        if prefer_local_answer:
-            should_use_web = False
-            diagnostics["web_reason"] = "local_answer_sufficient"
-        diagnostics["web_requested"] = should_use_web
-        diagnostics["web_provider"] = self.settings.web_search_provider_label()
+            diagnostics["local_answer_relevant"] = local_answer_relevant
+            diagnostics["local_sufficient"] = local_sufficient
+            if local_sufficient and _local_sources_support_identity_fact(local_sources):
+                used_local_sources = _local_sources_used_in_answer(local_sources, local_answer) or local_sources
+                _finalize_evidence_diagnostics(
+                    diagnostics,
+                    answer=local_answer,
+                    used_local_sources=used_local_sources,
+                    used_web_sources=[],
+                    model_answer=None,
+                    model_sufficient=False,
+                )
+                response = RAGResponse(
+                    local_answer,
+                    used_local_sources,
+                    [],
+                    False,
+                    "local-grounded",
+                    diagnostics,
+                )
+                return _attach_conversation_state(response, conversation.state, original_question, question)
 
         web_sources: list[WebSource] = []
         web_error = ""
         model_answer = MODEL_UNKNOWN
         model_sufficient = False
         model_answer_relevant = False
+        current_web_validation = _requires_current_source_verification(
+            question,
+            query_understanding,
+        )
+        diagnostics["current_web_validation"] = current_web_validation
+        prefer_local_answer = bool(local_sufficient and not current_or_web and not force_web)
+        diagnostics["prefer_local_answer"] = prefer_local_answer
+        standard_static_web = bool(
+            self.settings.enable_web_search
+            and not current_web_validation
+            and not local_file_answer_question
+            and not local_sufficient
+        )
+        should_use_web = (
+            _should_use_web(
+                question=question,
+                force_web=force_web or planned_web,
+                web_enabled=self.settings.enable_web_search,
+                query_understanding=query_understanding,
+            )
+            or standard_static_web
+            or bool(generation_error and web_ready)
+        )
+        if standard_static_web and not (force_web or planned_web):
+            diagnostics["web_reason"] = "standard_static_hybrid"
+        elif prefer_local_answer and should_use_web:
+            diagnostics["web_reason"] = "local_weighted_hybrid"
+        diagnostics["web_requested"] = should_use_web
+        diagnostics["web_provider"] = self.settings.web_search_provider_label()
 
         if generation_error and not should_use_web:
             response = RAGResponse(
@@ -842,12 +954,15 @@ class VerilumeRAG:
             diagnostics["web_note"] = "Web search was requested, but the selected provider is not configured."
 
         if should_use_web and web_ready:
-            _emit_stage(on_stage, "Checking AI knowledge and web evidence...")
-            current_web_validation = _requires_current_source_verification(
-                question,
-                query_understanding,
+            if current_web_validation:
+                _emit_stage(on_stage, "Checking current web evidence...")
+            else:
+                _emit_stage(on_stage, "Checking AI knowledge and web evidence...")
+            use_model_with_web = bool(not generation_error and not current_web_validation)
+            diagnostics["parallel_model_with_web"] = use_model_with_web
+            diagnostics["model_skipped_for_current_web"] = bool(
+                current_web_validation and not generation_error
             )
-            diagnostics["parallel_model_with_web"] = not generation_error
             with ThreadPoolExecutor(max_workers=2) as executor:
                 web_future = executor.submit(
                     self._search_web_sources,
@@ -860,7 +975,7 @@ class VerilumeRAG:
                     ),
                 )
                 model_future: Future | None = None
-                if not generation_error:
+                if use_model_with_web:
                     model_future = executor.submit(self.generator.answer_model_knowledge, query, list(history))
 
                 try:
@@ -881,7 +996,8 @@ class VerilumeRAG:
                 if model_future is not None:
                     try:
                         model_answer = model_future.result()
-                        model_answer_relevant = _model_answer_supports_question(query, model_answer)
+                        model_relevance_query = _clean_web_query(query) if should_use_web else query
+                        model_answer_relevant = _model_answer_supports_question(model_relevance_query, model_answer)
                         model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
                     except GenerationError as exc:
                         generation_error = str(exc)
@@ -890,17 +1006,21 @@ class VerilumeRAG:
                     except Exception as exc:
                         diagnostics["model_error"] = _clean_error_message(exc)
         elif not generation_error:
-            _emit_stage(on_stage, "Checking AI knowledge...")
-            try:
-                model_answer = self.generator.answer_model_knowledge(query, list(history))
-                model_answer_relevant = _model_answer_supports_question(query, model_answer)
-                model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
-            except GenerationError as exc:
-                generation_error = str(exc)
-                diagnostics["model_error"] = _clean_error_message(exc)
-                diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
-            except Exception as exc:
-                diagnostics["model_error"] = _clean_error_message(exc)
+            if current_web_validation:
+                diagnostics["model_skipped_for_current_web"] = True
+                diagnostics["parallel_model_with_web"] = False
+            else:
+                _emit_stage(on_stage, "Checking AI knowledge...")
+                try:
+                    model_answer = self.generator.answer_model_knowledge(query, list(history))
+                    model_answer_relevant = _model_answer_supports_question(query, model_answer)
+                    model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
+                except GenerationError as exc:
+                    generation_error = str(exc)
+                    diagnostics["model_error"] = _clean_error_message(exc)
+                    diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
+                except Exception as exc:
+                    diagnostics["model_error"] = _clean_error_message(exc)
         if (
             not should_use_web
             and not local_sufficient
@@ -1127,6 +1247,18 @@ class VerilumeRAG:
             limit=self.settings.retriever_k,
         )
 
+    def _local_corpus_sources(self) -> list[LocalSource]:
+        sample_sources = getattr(self.retriever, "sample_sources_by_document", None)
+        if not callable(sample_sources):
+            return []
+        try:
+            return sample_sources(
+                chunks_per_document=2,
+                limit_documents=max(1, int(getattr(self.settings, "retriever_k", 5))),
+            )
+        except Exception:
+            return []
+
     def _rerank_local(self, query: str, sources: Sequence[LocalSource]) -> list[LocalSource]:
         return rerank_local_sources(
             query,
@@ -1217,18 +1349,20 @@ class VerilumeRAG:
                 return age_answer
         if (
             query_understanding.personal_company_entity_lookup
-            and web_sources
+            and (local_sources or web_sources)
             and not query_understanding.requires_date_reconciliation
             and not local_sufficient
+            and not model_sufficient
         ):
             return _fallback_from_ranked_evidence(ranked_evidence, question=question)
         if (
             _looks_like_scientific_local_query(question)
             and web_sources
             and not query_understanding.requires_date_reconciliation
+            and not model_sufficient
         ):
             return _scientific_answer_from_ranked_evidence(ranked_evidence, question=question)
-        if _looks_like_public_knowledge_query(question) and web_sources:
+        if _looks_like_public_knowledge_query(question) and web_sources and not model_sufficient:
             return _public_knowledge_answer_from_web(question, web_sources)
         if _looks_like_news_query(question) and web_sources:
             return _news_answer_from_web(question, web_sources)
@@ -1253,6 +1387,20 @@ class VerilumeRAG:
                     ).strip()
                 except GenerationError:
                     return _fallback_from_ranked_evidence(ranked_evidence, question=question)
+        if local_sufficient and model_sufficient and _model_answer_available(model_answer):
+            try:
+                synthesized = self.generator.answer_final(
+                    question=question,
+                    history=history,
+                    local_answer=local_answer,
+                    model_answer=model_answer,
+                    local_sources=local_sources,
+                    web_sources=[],
+                ).strip()
+                if self._is_sufficient(synthesized):
+                    return synthesized
+            except GenerationError:
+                pass
         if local_sufficient:
             return local_answer
         if model_sufficient:
@@ -1345,6 +1493,17 @@ class VerilumeRAG:
         return answer
 
     def _answer_local_file_question(self, question: str, local_sources: list[LocalSource], diagnostics: dict, on_stage=None) -> RAGResponse:
+        corpus_overview = _is_local_corpus_overview_request(question)
+        if corpus_overview:
+            corpus_sources = self._local_corpus_sources()
+            if corpus_sources:
+                diagnostics["local_corpus_browse"] = True
+                diagnostics["local_corpus_count"] = len(corpus_sources)
+                local_sources = _merge_local_sources(
+                    corpus_sources,
+                    local_sources,
+                    limit=max(self.settings.retriever_k * 8, len(corpus_sources)),
+                )
         expanded_query = _expand_local_file_query(question)
         diagnostics["expanded_local_query"] = expanded_query
         expanded_sources: list[LocalSource] = []
@@ -1354,7 +1513,7 @@ class VerilumeRAG:
         pool_limit = max(self.settings.retriever_k * 8, 64)
         source_limit = max(self.settings.retriever_k, 8)
         final_sources: list[LocalSource] | None = None
-        if expansion_queries:
+        if expansion_queries and not corpus_overview:
             _emit_stage(on_stage, "Expanding local file keywords...")
             for expansion_query in expansion_queries:
                 expanded_sources = _merge_local_sources(
@@ -1378,12 +1537,15 @@ class VerilumeRAG:
                     break
 
         if final_sources is None:
-            final_sources = _rank_and_filter_local_file_sources(
-                self,
-                ranking_query,
-                _merge_local_sources(local_sources, expanded_sources, limit=pool_limit),
-                source_limit,
-            )
+            if corpus_overview:
+                final_sources = _merge_local_sources(local_sources, expanded_sources, limit=pool_limit)
+            else:
+                final_sources = _rank_and_filter_local_file_sources(
+                    self,
+                    ranking_query,
+                    _merge_local_sources(local_sources, expanded_sources, limit=pool_limit),
+                    source_limit,
+                )
 
         local_sources = final_sources
         diagnostics["local_count"] = len(local_sources)
@@ -1401,7 +1563,81 @@ class VerilumeRAG:
         )
         if not local_sources:
             return RAGResponse(LOCAL_FILE_NOT_FOUND, [], [], False, "low", diagnostics)
+        overview_sources = _relabel_local_sources(_first_source_per_document(local_sources))
+        overview_answer = _local_corpus_overview_answer(question, overview_sources)
+        if overview_answer:
+            _finalize_evidence_diagnostics(
+                diagnostics,
+                answer=overview_answer,
+                used_local_sources=overview_sources,
+                used_web_sources=[],
+                model_answer=None,
+                model_sufficient=False,
+            )
+            return RAGResponse(overview_answer, overview_sources, [], False, "local-grounded", diagnostics)
+        if _is_local_summary_request(question):
+            _emit_stage(on_stage, "Summarising local evidence...")
+            try:
+                answer = self.generator.answer_local(question, [], local_sources)
+            except GenerationError as exc:
+                diagnostics["local_summary_error"] = _clean_error_message(exc)
+            else:
+                if self._is_sufficient(answer):
+                    answer = _ensure_local_citation(answer, local_sources)
+                    _finalize_evidence_diagnostics(
+                        diagnostics,
+                        answer=answer,
+                        used_local_sources=_local_sources_used_in_answer(local_sources, answer) or local_sources,
+                        used_web_sources=[],
+                        model_answer=None,
+                        model_sufficient=False,
+                    )
+                    return RAGResponse(answer, local_sources, [], False, "local-grounded", diagnostics)
+        if _prefers_local_fact_extraction(question):
+            ranked_evidence, _ = _add_evidence_diagnostics(
+                diagnostics,
+                question,
+                local_sources,
+                [],
+                _local_file_evidence_answer(local_sources),
+                True,
+                None,
+                False,
+                self.settings,
+            )
+            answer = _local_file_fact_answer(question, local_sources, ranked_evidence)
+            return RAGResponse(answer, local_sources, [], False, "local-grounded", diagnostics)
         return RAGResponse(_local_file_evidence_answer(local_sources), local_sources, [], False, "local-grounded", diagnostics)
+
+    def _answer_local_inventory_question(self, question: str, diagnostics: dict) -> RAGResponse:
+        try:
+            stats = collect_document_stats(self.settings)
+        except Exception:
+            stats = {}
+            diagnostics["document_stats_error"] = True
+        documents = int(stats.get("uploaded_documents", 0) or 0)
+        chunks = int(stats.get("chunks_indexed", 0) or 0)
+        pdf_pages = int(stats.get("pdf_pages", 0) or 0)
+        file_types = int(stats.get("file_types", 0) or 0)
+        diagnostics["document_stats"] = {
+            "uploaded_documents": documents,
+            "chunks_indexed": chunks,
+            "pdf_pages": pdf_pages,
+            "file_types": file_types,
+        }
+        diagnostics["used_local"] = True
+        diagnostics["used_model_knowledge"] = False
+        diagnostics["used_web"] = False
+        diagnostics["evidence_streams"] = ["local"]
+        diagnostics["evidence_winner"] = "local"
+        noun = "document" if documents == 1 else "documents"
+        lines = [
+            f"The local Verilume library currently has {documents} uploaded {noun}.",
+            f"It includes {chunks} indexed chunks and {pdf_pages} PDF pages across {file_types} file type(s).",
+            "",
+            "Confidence: High",
+        ]
+        return RAGResponse("\n".join(lines), [], [], False, "local-grounded", diagnostics)
 
     def _search_web_sources(
         self,
@@ -1609,26 +1845,58 @@ class VerilumeRAG:
             "can you find",
             "contain",
             "contains",
+            "count",
             "do i have",
             "do my",
             "do the uploaded",
             "do you have",
             "does",
+            "example",
+            "examples",
             "find",
+            "give",
             "has",
             "have",
             "is ",
+            "list",
+            "many",
             "mention",
             "mentions",
+            "number",
+            "show",
+            "summarise",
+            "summarize",
+            "summary",
             "there",
             "where",
             "which",
         )
+        if _explicit_local_file_names(lower) and any(
+            marker in lower
+            for marker in (
+                "summarise",
+                "summarize",
+                "summary",
+                "explain",
+                "describe",
+                "tell me about",
+                "what is in",
+                "what's in",
+            )
+        ):
+            return True
         if any(marker in lower for marker in LOCAL_FILE_MARKERS) and any(
             marker in lower for marker in action_markers
         ):
             return True
+        if _is_local_corpus_overview_request(question):
+            return True
         intent_patterns = (
+            r"\b(?:how\s+many|number\s+of|count)\b.+\b(?:local|uploaded|indexed)\s+(?:file|files|document|documents|chunk|chunks)\b",
+            r"\b(?:give|show|list)\b.+\b(?:example|examples)\b.+\b(?:local|uploaded|indexed)\s+(?:file|files|document|documents)\b",
+            r"\b(?:summari[sz]e|summary\s+of|describe|tell\s+me\s+about)\b.+\b[a-z0-9][a-z0-9._-]*\.(?:pdf|docx?|pptx|txt|md|csv)\b",
+            r"\b(?:summari[sz]e|summary\s+of|describe|list|show)\b.+\b(?:the\s+)?(?:file|files|document|documents)\b",
+            r"\bwhat(?:'s| is| are)\s+(?:the\s+)?(?:content|contents)\s+of\s+(?:the\s+)?(?:file|files|document|documents)\b",
             r"\b(?:do|does|did|is|are|any)\b.+\b(?:my|uploaded|indexed|local)\s+(?:file|files|document|documents)\b",
             r"\b(?:which|what)\s+(?:file|files|document|documents)\b",
             r"\bin\s+(?:my\s+|the\s+)?(?:uploaded\s+|indexed\s+|local\s+)?(?:file|document)\b",
@@ -1726,6 +1994,7 @@ def _response_cache_key(
     question: str,
     history: Sequence[ChatMessage],
     conversation_state: ConversationState | None = None,
+    settings: AppSettings | None = None,
 ) -> tuple:
     normalized = normalize_query(question)
     normalized_question = normalized.canonical or re.sub(
@@ -1742,7 +2011,29 @@ def _response_cache_key(
             tuple(sorted(conversation_state.roles.items())),
             tuple(conversation_state.preferred_sources),
         )
-    return normalized_question, state_key
+    settings_key = ()
+    if settings is not None:
+        try:
+            web_ready = settings.web_search_ready()
+        except Exception:
+            web_ready = False
+        active_model_value = getattr(settings, "active_generation_model", "")
+        if callable(active_model_value):
+            active_model_value = active_model_value()
+        settings_key = (
+            bool(getattr(settings, "enable_web_search", False)),
+            str(getattr(settings, "web_search_provider", "")),
+            bool(web_ready),
+            int(getattr(settings, "web_search_max_results", 0) or 0),
+            int(getattr(settings, "web_search_timeout_seconds", 0) or 0),
+            str(active_model_value),
+            str(getattr(settings, "collection_name", "")),
+            str(getattr(settings, "docs_dir", "")),
+            str(getattr(settings, "chroma_dir", "")),
+            int(getattr(settings, "retriever_k", 0) or 0),
+            float(getattr(settings, "retrieval_score_threshold", 0.0) or 0.0),
+        )
+    return normalized_question, state_key, settings_key
 
 
 def _query_needs_context_cache_key(question: str) -> bool:
@@ -1849,6 +2140,96 @@ def _is_contextual_personal_document_fact_query(question: str, state: Conversati
     )
 
 
+def _is_identity_attribute_local_fact_query(question: str, state: ConversationState | None = None) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+
+    if not any(
+        marker in normalized
+        for marker in (
+            "born",
+            "birthplace",
+            "place of birth",
+            "date of birth",
+            "place of origin",
+            "nationality",
+        )
+    ) and not re.search(r"\bwhere\b[^?!.]*\bfrom\b", normalized):
+        return False
+
+    has_named_reference = len(_identity_tokens(question)) >= 2 or any(
+        word[:1].isupper() and word.strip("'’").lower() not in IDENTITY_STOPWORDS
+        for word in _identity_words(question)
+    )
+    if has_named_reference:
+        return True
+
+    if state is None:
+        return False
+
+    has_reference = bool(re.search(r"\b(?:he|him|his|she|her|they|them|their|it|its|this|that)\b", normalized))
+    if not has_reference:
+        return False
+
+    context_text = " ".join(
+        _unique_nonempty(
+            [
+                getattr(state, "active_person", ""),
+                getattr(state, "active_document", ""),
+                getattr(state, "last_resolved_question", ""),
+                getattr(state, "last_answer_summary", ""),
+            ]
+        )
+    )
+    context_normalized = normalize_intent_text(context_text)
+    return any(noun in context_normalized for noun in ("passport", "place of birth", "birth", "nationality", "origin"))
+
+
+def _local_sources_support_identity_fact(local_sources: Sequence[LocalSource]) -> bool:
+    return any(_local_source_supports_identity_fact(source) for source in local_sources)
+
+
+def _local_source_supports_identity_fact(source: LocalSource) -> bool:
+    context = _normalize_ocr_location_context(
+        " ".join(
+            _unique_nonempty(
+                [
+                    getattr(source, "document", ""),
+                    getattr(source, "text", ""),
+                    str(getattr(source, "metadata", {}) or {}),
+                ]
+            )
+        )
+    )
+    if re.search(r"\bborn\b", context):
+        return True
+    return any(
+        marker in context
+        for marker in (
+            "passport",
+            "identity card",
+            "id card",
+            "date of birth",
+            "place of birth",
+            "birthplace",
+            "lieu de naissance",
+            "nationality",
+            "place of origin",
+        )
+    )
+
+
+def _prefers_local_fact_extraction(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    return bool(
+        _local_file_requested_location_kind(normalized)
+        or _local_file_requested_date_kind(normalized)
+        or _is_identity_attribute_local_fact_query(question)
+        or _is_thesis_defense_date_question(question)
+    )
+
+
 def _should_answer_local_file_fact_from_evidence(question: str) -> bool:
     normalized = normalize_intent_text(question)
     if not normalized or _should_answer_local_file_question_directly(question):
@@ -1917,6 +2298,157 @@ def _explicit_local_file_names(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(matches))
 
 
+def _is_local_inventory_question(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    has_count_language = bool(
+        re.search(r"\b(?:how many|number of|count|total)\b", normalized)
+    )
+    if not has_count_language:
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "local file",
+            "local files",
+            "local document",
+            "local documents",
+            "uploaded file",
+            "uploaded files",
+            "uploaded document",
+            "uploaded documents",
+            "indexed file",
+            "indexed files",
+            "indexed document",
+            "indexed documents",
+            "chunk",
+            "chunks",
+            "knowledge base",
+            "database",
+            "data base",
+        )
+    )
+
+
+def _is_local_summary_request(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    if _is_local_corpus_overview_request(question):
+        return True
+    if _explicit_local_file_names(question) and any(
+        marker in normalized
+        for marker in ("summarise", "summarize", "summary", "describe", "tell me about")
+    ):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "summarise local",
+            "summarize local",
+            "summary local",
+            "give examples from local",
+            "give examples from the local",
+            "show examples from local",
+            "show examples from the local",
+            "list examples from local",
+            "list examples from the local",
+            "examples from local",
+            "examples from the local",
+            "examples local files",
+        )
+    )
+
+
+def _is_local_corpus_overview_request(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    if _is_local_inventory_question(question):
+        return False
+    broad_target_pattern = (
+        r"\b(?:local\s+|uploaded\s+|indexed\s+)?(?:files|documents|docs)\b"
+        r"|\bknowledge\s+base\b|\bdata\s*base\b"
+    )
+    action_patterns = (
+        r"\b(?:summari[sz]e|summary\s+of|describe|list|show)\b",
+        r"\b(?:content|contents)\s+of\b",
+        r"\bwhat(?:'s| is| are)\s+(?:the\s+)?(?:content|contents|inside)\b",
+        r"\bwhat(?:'s| is)\s+in\s+(?:the\s+)?(?:file|files|document|documents)\b",
+    )
+    has_action = any(re.search(pattern, normalized) for pattern in action_patterns)
+    has_target = bool(re.search(broad_target_pattern, normalized))
+    if has_action and has_target:
+        return True
+    return bool(
+        re.search(
+            r"\b(?:files|documents)\b.+\b(?:summari[sz]e|summary|content|contents)\b"
+            r"|\b(?:docs)\b.+\b(?:summari[sz]e|summary|content|contents)\b"
+            r"|\b(?:content|contents)\s+of\s+(?:files|documents|docs)\b",
+            normalized,
+        )
+    )
+
+
+def _local_corpus_overview_answer(question: str, local_sources: Sequence[LocalSource]) -> str | None:
+    if not _is_local_corpus_overview_request(question) or not local_sources:
+        return None
+    first_sources = _first_source_per_document(local_sources)
+    if not first_sources:
+        return None
+    document_count = len(first_sources)
+    noun = "document" if document_count == 1 else "documents"
+    lines = [f"I found {document_count} indexed local {noun}:"]
+    grouped = _group_local_sources_by_document(local_sources)
+    for source in first_sources:
+        document_sources = grouped.get(source.document, [source])
+        page_values = sorted(
+            {
+                int(item.page)
+                for item in document_sources
+                if isinstance(getattr(item, "page", None), int)
+            }
+        )
+        page_note = f" Pages sampled: {', '.join(str(page) for page in page_values[:4])}." if page_values else ""
+        summary = _local_document_compact_summary(source.document, document_sources)
+        lines.append(f"- {source.document}: {summary}{page_note} [{source.label}]")
+    lines.extend(["", "Confidence: High"])
+    return "\n".join(lines)
+
+
+def _group_local_sources_by_document(local_sources: Sequence[LocalSource]) -> dict[str, list[LocalSource]]:
+    grouped: dict[str, list[LocalSource]] = {}
+    for source in local_sources:
+        document = getattr(source, "document", "") or "Unknown document"
+        grouped.setdefault(document, []).append(source)
+    return grouped
+
+
+def _first_source_per_document(local_sources: Sequence[LocalSource]) -> list[LocalSource]:
+    return [sources[0] for sources in _group_local_sources_by_document(local_sources).values()]
+
+
+def _local_document_compact_summary(document: str, sources: Sequence[LocalSource]) -> str:
+    text = _compact_source_text(" ".join(getattr(source, "text", "") for source in sources), limit=420)
+    normalized = normalize_intent_text(f"{document} {text}")
+    if "passport" in normalized:
+        return "A passport/identity document with personal identification and passport details."
+    if "defended his doctoral thesis" in normalized or "doctoral thesis" in normalized or "diploma" in normalized:
+        return "Academic credential material, including confirmation of a doctoral thesis defense and related diploma information."
+    if "regression" in normalized or "stata" in normalized or "time series" in normalized:
+        return "Course or exercise material about applied time series analysis and multiple regression modelling."
+    return text or "Indexed local document content."
+
+
+def _ensure_local_citation(answer: str, local_sources: Sequence[LocalSource]) -> str:
+    text = (answer or "").strip()
+    if not text or not local_sources or re.search(r"\[S\d+\]", text):
+        return text
+    source = local_sources[0]
+    return f"{text}\n\nSource: [{source.label}] {source.document}"
+
+
 def _source_matches_explicit_local_file_name(source, file_names: Sequence[str]) -> bool:
     if not file_names:
         return False
@@ -1944,14 +2476,20 @@ def _local_file_location_answer(question: str, local_sources: Sequence[LocalSour
     if requested_location_kind is None or not local_sources:
         return None
 
-    best_source = local_sources[0]
-    best_place = _best_local_place_candidate(question, getattr(best_source, "text", ""))
-    if not best_place:
-        return None
-    subject_label = _local_source_document_label(best_source, normalized)
+    for source in local_sources:
+        best_place = _best_local_place_candidate(question, getattr(source, "text", ""))
+        if not best_place:
+            continue
+        subject_label = _local_source_document_label(source, normalized)
 
-    if requested_location_kind == "issue_place":
-        return f"The {subject_label} was issued in {best_place} [{best_source.label}].\n\nConfidence: High"
+        if requested_location_kind == "issue_place":
+            return f"The {subject_label} was issued in {best_place} [{source.label}].\n\nConfidence: High"
+
+        if requested_location_kind == "birth_place":
+            return f"The {subject_label} lists the place of birth as {best_place} [{source.label}].\n\nConfidence: High"
+
+        if requested_location_kind == "origin":
+            return f"The {subject_label} lists the nationality as {best_place} [{source.label}].\n\nConfidence: High"
 
     return None
 
@@ -1959,6 +2497,16 @@ def _local_file_location_answer(question: str, local_sources: Sequence[LocalSour
 def _local_file_requested_location_kind(normalized_question: str) -> str | None:
     if not normalized_question:
         return None
+    if (
+        "place of origin" in normalized_question
+        or "nationality" in normalized_question
+        or re.search(r"\bwhere\b[^?!.]*\bfrom\b", normalized_question)
+    ):
+        return "origin"
+    if "place of birth" in normalized_question or "birthplace" in normalized_question:
+        return "birth_place"
+    if "born" in normalized_question and "issue" not in normalized_question:
+        return "birth_place"
     if "place of issue" in normalized_question:
         return "issue_place"
     if re.search(r"\bissued\s+in\b", normalized_question):
@@ -1976,20 +2524,28 @@ def _local_file_date_answer(question: str, local_sources: Sequence[LocalSource])
     if requested_date_kind is None or not local_sources:
         return None
 
-    best_source = local_sources[0]
-    best_date = _best_local_date_candidate(question, getattr(best_source, "text", ""))
-    if not best_date:
-        return None
-    subject_label = _local_source_document_label(best_source, normalized)
+    for source in local_sources:
+        if requested_date_kind == "defense":
+            best_date = _best_local_thesis_defense_date_candidate(getattr(source, "text", ""))
+        else:
+            best_date = _best_local_date_candidate(question, getattr(source, "text", ""))
+        if not best_date:
+            continue
+        subject_label = _local_source_document_label(source, normalized)
 
-    if requested_date_kind == "issue":
-        return f"The {subject_label} was issued on {best_date} [{best_source.label}].\n\nConfidence: High"
+        if requested_date_kind == "defense":
+            return f"The local document states that the doctoral thesis was defended on {best_date} [{source.label}].\n\nConfidence: High"
 
-    if requested_date_kind == "expiry":
-        return f"The {subject_label} expires on {best_date} [{best_source.label}].\n\nConfidence: High"
+        if requested_date_kind == "issue":
+            return f"The {subject_label} was issued on {best_date} [{source.label}].\n\nConfidence: High"
 
-    subject = _local_file_subject_from_question(question) or best_source.document
-    return f"The date on {subject} is {best_date} [{best_source.label}].\n\nConfidence: High"
+        if requested_date_kind == "expiry":
+            return f"The {subject_label} expires on {best_date} [{source.label}].\n\nConfidence: High"
+
+        subject = _local_file_subject_from_question(question) or source.document
+        return f"The date on {subject} is {best_date} [{source.label}].\n\nConfidence: High"
+
+    return None
 
 
 def _local_file_requested_date_kind(normalized_question: str) -> str | None:
@@ -1997,6 +2553,8 @@ def _local_file_requested_date_kind(normalized_question: str) -> str | None:
         return None
     if _local_file_requested_location_kind(normalized_question):
         return None
+    if _is_thesis_defense_date_question(normalized_question):
+        return "defense"
     if any(marker in normalized_question for marker in ("expiration", "expiry", "expire", "expires")):
         return "expiry"
     if any(marker in normalized_question for marker in ("issue", "issued", "issuance", "delivrance")):
@@ -2004,6 +2562,15 @@ def _local_file_requested_date_kind(normalized_question: str) -> str | None:
     if "date" in normalized_question:
         return "date"
     return None
+
+
+def _is_thesis_defense_date_question(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    has_defense = any(marker in normalized for marker in ("defend", "defended", "defense", "defence"))
+    has_thesis = any(marker in normalized for marker in ("phd", "ph d", "doctoral", "doctorate", "thesis"))
+    return bool(has_defense and has_thesis)
 
 
 def _local_source_document_label(source: LocalSource, normalized_question: str) -> str:
@@ -2020,19 +2587,69 @@ def _best_local_place_candidate(question: str, text: str) -> str | None:
     if not text:
         return None
 
+    requested_location_kind = _local_file_requested_location_kind(normalize_intent_text(question))
     normalized_text = _normalize_ocr_location_context(text)
-    patterns = (
-        r"(?:place of issue|lieu de delivrance)\s+(?P<place>[a-z][a-z\s'’-]{2,40}?)(?=\s+(?:\d{1,2}\.?|signature|bearer|profession|occupation|height|date|place of birth)\b|$)",
-        r"(?:issued in)\s+(?P<place>[a-z][a-z\s'’-]{2,40}?)(?=\s+(?:\d{1,2}\.?|signature|bearer|profession|occupation|height|date|place of birth)\b|$)",
+    if requested_location_kind == "birth_place":
+        return _extract_local_place_after_markers(
+            normalized_text,
+            markers=("place of birth", "lieu de naissance"),
+        )
+    if requested_location_kind == "origin":
+        return _extract_local_origin_after_markers(normalized_text)
+    return _extract_local_place_after_markers(
+        normalized_text,
+        markers=("place of issue", "lieu de delivrance", "issued in"),
     )
-    for pattern in patterns:
-        match = re.search(pattern, normalized_text)
-        if not match:
+
+
+def _extract_local_place_after_markers(normalized_text: str, *, markers: Sequence[str]) -> str | None:
+    for marker in markers:
+        start = normalized_text.find(marker)
+        if start < 0:
             continue
-        place = re.sub(r"\s+", " ", match.group("place")).strip(" .,;:-")
-        if not place:
-            continue
-        return _title_local_place(place)
+        tail = normalized_text[start + len(marker) : start + len(marker) + 64]
+        tail = re.sub(r"^[\s/:;,-]+", "", tail)
+        tail = re.split(
+            r"\s+\d{1,2}\.?\s+|\s+(?:signature|bearer|profession|occupation|height|date|place of issue|place of birth)\b",
+            tail,
+            maxsplit=1,
+        )[0]
+        tail = re.sub(r"^[a-z]\s+", "", tail)
+        tail = re.sub(r"[^a-z\s'’-]+$", "", tail).strip(" .,;:-")
+        if tail:
+            return _title_local_place(tail)
+    return None
+
+
+def _extract_local_origin_after_markers(normalized_text: str) -> str | None:
+    start = normalized_text.find("nationality")
+    if start < 0:
+        return None
+    tail = normalized_text[start + len("nationality") : start + len("nationality") + 48]
+    compact = re.sub(r"[^a-z]+", "", tail.replace("0", "o"))
+    if not compact:
+        return None
+    candidates = (
+        ("cameroon", ("cameroon", "cameroon", "cameroun", "cameroonian", "camerounaise")),
+        ("democratic republic of the congo", ("congo", "congolese", "rdc")),
+        ("france", ("france", "french")),
+        ("luxembourg", ("luxembourg", "luxembourgeois", "luxembourgish")),
+        ("belgium", ("belgium", "belgian", "belgique")),
+        ("nigeria", ("nigeria", "nigerian")),
+        ("ghana", ("ghana", "ghanaian")),
+        ("kenya", ("kenya", "kenyan")),
+        ("uganda", ("uganda", "ugandan")),
+        ("rwanda", ("rwanda", "rwandan")),
+        ("burundi", ("burundi", "burundian")),
+        ("united states", ("unitedstates", "american", "usa")),
+        ("united kingdom", ("unitedkingdom", "british", "uk")),
+    )
+    for country, markers in candidates:
+        if any(marker in compact for marker in markers):
+            return _title_local_place(country)
+    detected = _country_from_text(_title_local_place(compact))
+    if detected:
+        return detected
     return None
 
 
@@ -2048,11 +2665,44 @@ def _title_local_place(value: str) -> str:
     return " ".join(words)
 
 
+def _best_local_thesis_defense_date_candidate(text: str) -> str | None:
+    if not text:
+        return None
+    patterns = (
+        rf"\bdefended\s+(?:his|her|their)?\s*(?:doctoral\s+)?thesis\s+on\s*({_TEXTUAL_DATE_VALUE_PATTERN})",
+        rf"\b(?:doctoral\s+)?thesis\s+(?:was\s+)?defended\s+on\s*({_TEXTUAL_DATE_VALUE_PATTERN})",
+        rf"\bdefen[cs]e\s+(?:date\s+)?(?:on\s+)?({_TEXTUAL_DATE_VALUE_PATTERN})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _title_textual_date(match.group(1))
+
+    candidates: list[tuple[int, int, str]] = []
+    for match in _TEXTUAL_DATE_PATTERN.finditer(text):
+        context = _fold_text(text[max(0, match.start() - 90) : min(len(text), match.end() + 90)])
+        score = 0
+        if "defended" in context or "defend" in context:
+            score += 6
+        if "doctoral" in context:
+            score += 4
+        if "thesis" in context:
+            score += 4
+        if "phd" in context or "doctorate" in context:
+            score += 2
+        if score:
+            candidates.append((score, match.start(), _title_textual_date(match.group(0))))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], -item[1]))[2]
+
+
 def _best_local_date_candidate(question: str, text: str) -> str | None:
     if not text:
         return None
 
     normalized_question = _fold_text(question)
+    thesis_defense_requested = _is_thesis_defense_date_question(normalized_question)
     issue_date_requested = bool(
         re.search(r"\b(?:issue|issued|issuance|delivrance)\b", normalized_question)
     )
@@ -2077,6 +2727,8 @@ def _best_local_date_candidate(question: str, text: str) -> str | None:
         preferred_terms.extend(["session", "exam", "examen", "sproochentest", "passation"])
     if payment_date_requested:
         preferred_terms.extend(["payment", "paid", "regle", "montant", "en date du"])
+    if thesis_defense_requested:
+        preferred_terms.extend(["defended", "defend", "doctoral thesis", "thesis", "phd"])
     if not preferred_terms:
         preferred_terms.append("date")
 
@@ -2139,6 +2791,11 @@ _OCR_TOLERANT_DATE_PATTERN = re.compile(
     r"\b(?:[0-9OoIiLlTtRrSsBbZz]{2}[./-][0-9OoIiLlTtRrSsBbZz]{2}[./-][0-9OoIiLlTtRrSsBbZz]{4}|"
     r"[0-9OoIiLlTtRrSsBbZz]{4}-[0-9OoIiLlTtRrSsBbZz]{2}-[0-9OoIiLlTtRrSsBbZz]{2}(?:-[A-Za-z]{2})?)\b"
 )
+_TEXTUAL_DATE_VALUE_PATTERN = (
+    r"\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}"
+)
+_TEXTUAL_DATE_PATTERN = re.compile(rf"(?<!\d){_TEXTUAL_DATE_VALUE_PATTERN}\b", re.IGNORECASE)
 _OCR_DATE_TRANSLATION = str.maketrans(
     {
         "B": "8",
@@ -2159,6 +2816,10 @@ _OCR_DATE_TRANSLATION = str.maketrans(
         "z": "2",
     }
 )
+
+
+def _title_textual_date(value: str) -> str:
+    return " ".join(word[:1].upper() + word[1:].lower() for word in re.split(r"\s+", value.strip()) if word)
 
 
 def _ocr_tolerant_date_matches(text: str):
@@ -2223,6 +2884,8 @@ def _response_cache_ttl(response: RAGResponse) -> float:
     if diagnostics.get("requires_date_reconciliation"):
         return CURRENT_RESPONSE_CACHE_TTL_SECONDS
     if response.confidence in {"needs-token", "model-selection-warning", "generation-error"}:
+        return 0.0
+    if response.confidence == "low" and not response.local_sources and not response.web_sources:
         return 0.0
     return DEFAULT_RESPONSE_CACHE_TTL_SECONDS
 
@@ -2317,6 +2980,30 @@ def _looks_like_public_knowledge_query(question: str) -> bool:
     return any(part.startswith(PUBLIC_DEFINITION_PREFIXES) for part in parts)
 
 
+def _looks_like_generic_knowledge_question(question: str) -> bool:
+    normalized = normalize_intent_text(question)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in LOCAL_FILE_MARKERS):
+        return False
+    if _looks_like_public_knowledge_query(question) or _looks_like_scientific_local_query(question):
+        return True
+    return normalized.startswith(
+        (
+            "define ",
+            "describe ",
+            "explain ",
+            "how do ",
+            "how does ",
+            "what are ",
+            "what does ",
+            "what is ",
+            "why do ",
+            "why does ",
+        )
+    )
+
+
 def _looks_like_news_query(question: str) -> bool:
     lower = (question or "").lower()
     if any(marker in lower for marker in ("news", "reuters", "ap news", "bbc", "sky news", "financial times", "guardian")):
@@ -2335,6 +3022,8 @@ def _requires_current_source_verification(question: str, query_understanding=Non
     if _looks_like_office_start_query(question) or _looks_like_age_at_office_query(question):
         return False
     if _looks_like_news_query(question):
+        return True
+    if getattr(query_understanding, "fact_type", None) in {FactType.DYNAMIC, FactType.NEWS}:
         return True
     if any(
         marker in normalized
@@ -2375,6 +3064,11 @@ def _is_stable_model_knowledge_question(question: str) -> bool:
         return False
     if re.search(r"\b(?:latest|current|recent|today|now|this year|breaking|resigned?|resignation)\b", normalized):
         return False
+    if re.search(
+        r"\b(?:population|gdp|gross domestic product|stock price|share price|exchange rate|weather|forecast|inflation|unemployment|interest rate|price|prices)\b",
+        normalized,
+    ):
+        return False
     if _looks_like_scientific_local_query(question) or _looks_like_public_knowledge_query(question):
         return True
     if normalized.startswith(
@@ -2393,7 +3087,7 @@ def _is_stable_model_knowledge_question(question: str) -> bool:
         return not any(marker in normalized for marker in PUBLIC_OFFICE_MARKERS)
     return bool(
         re.search(
-            r"\b(?:smallest|largest|biggest|capital|area|population|continent|ocean|mountain|river|country in europe)\b",
+            r"\b(?:smallest|largest|biggest|capital|area|continent|ocean|mountain|river|country in europe)\b",
             normalized,
         )
     )
@@ -2456,9 +3150,13 @@ def _local_search_queries(
 
     if identity_tokens and not local_file_question:
         name = " ".join(identity_tokens)
+        reversed_name = " ".join(reversed(identity_tokens))
         candidates.extend(
             [
                 name,
+                reversed_name,
+                f"{name} passport",
+                f"{name} identity document",
                 f"{name} profile",
                 f"{name} publications",
                 f"{name} research",
@@ -2471,6 +3169,10 @@ def _local_search_queries(
     if local_file_question and (
         _is_personal_document_fact_query(cleaned)
         or _is_personal_document_fact_query(stripped)
+        or _is_identity_attribute_local_fact_query(cleaned)
+        or _is_identity_attribute_local_fact_query(stripped)
+        or _is_thesis_defense_date_question(cleaned)
+        or _is_thesis_defense_date_question(stripped)
         or "passport" in cleaned.lower()
     ):
         candidates.extend(_personal_document_local_queries(cleaned, identity_tokens))
@@ -2485,14 +3187,41 @@ def _personal_document_local_queries(query: str, identity_tokens: Sequence[str])
     variants: list[str] = []
 
     if _local_file_requested_location_kind(normalized):
-        if name:
-            variants.extend(
-                [
-                    f"{name} {document} place of issue",
-                    f"{name} {document} issued in",
-                ]
-            )
-        variants.extend([f"{document} place of issue", f"{document} issued in"])
+        kind = _local_file_requested_location_kind(normalized)
+        if kind == "birth_place":
+            document = "passport"
+            if name:
+                variants.extend(
+                    [
+                        f"{name} place of birth",
+                        f"{name} passport place of birth",
+                        f"{name} {document} place of birth",
+                        f"{name} birthplace",
+                    ]
+                )
+            variants.extend([f"{document} place of birth", "place of birth", "birthplace"])
+        elif kind == "origin":
+            document = "passport"
+            if name:
+                variants.extend(
+                    [
+                        f"{name} nationality",
+                        f"{name} passport nationality",
+                        f"{name} {document} nationality",
+                        f"{name} {document} place of origin",
+                    ]
+                )
+            variants.extend([f"{document} nationality", f"{document} place of origin", "nationality"])
+        else:
+            document = "passport" if "passport" in normalized else "document"
+            if name:
+                variants.extend(
+                    [
+                        f"{name} {document} place of issue",
+                        f"{name} {document} issued in",
+                    ]
+                )
+            variants.extend([f"{document} place of issue", f"{document} issued in"])
     elif any(marker in normalized for marker in ("issue", "issued", "issuance", "delivrance")):
         if name:
             variants.append(f"{name} {document} date of issue")
@@ -2501,6 +3230,16 @@ def _personal_document_local_queries(query: str, identity_tokens: Sequence[str])
         if name:
             variants.append(f"{name} {document} date of expiry")
         variants.extend([f"{document} date of expiry", f"{document} expires"])
+    elif _is_thesis_defense_date_question(normalized):
+        if name:
+            variants.extend(
+                [
+                    f"{name} defended doctoral thesis",
+                    f"{name} thesis defense",
+                    f"{name} phd defense",
+                ]
+            )
+        variants.extend(["defended doctoral thesis", "doctoral thesis defense", "phd defense"])
 
     return _unique_nonempty([query, *variants])
 
@@ -2511,8 +3250,13 @@ def _normalize_ocr_location_context(text: str) -> str:
         (r"\b0f\b", "of"),
         (r"\bol\b", "of"),
         (r"\boi\b", "of"),
+        (r"\bblrth\b", "birth"),
+        (r"\bblth\b", "birth"),
         (r"\blssue\b", "issue"),
         (r"\b1ssue\b", "issue"),
+        (r"\bnaisbance\b", "naissance"),
+        (r"\bnaisbance\b", "naissance"),
+        (r"\bplace\s+of\s+birth\b", "place of birth"),
         (r"\bplace\s+oi\s+issue\b", "place of issue"),
         (r"\bplace\s+ol\s+issue\b", "place of issue"),
         (r"\bd6llvrance\b", "delivrance"),
@@ -2662,6 +3406,29 @@ def _add_evidence_diagnostics(
     diagnostics["source_agreement"] = resolution.source_agreement
     diagnostics["freshness_note"] = reconciliation.freshness_note
     diagnostics["local_is_older_than_web"] = reconciliation.local_is_older_than_web
+    diagnostics["fact_type"] = getattr(query_understanding.fact_type, "value", str(query_understanding.fact_type))
+    diagnostics["evidence_policy"] = getattr(
+        query_understanding.evidence_policy,
+        "value",
+        str(query_understanding.evidence_policy),
+    )
+    diagnostics["ranked_evidence"] = [
+        {
+            "label": item.citation_label,
+            "source_type": item.source_type.value,
+            "title": item.title,
+            "score": round(float(item.score or 0.0), 4),
+            "retrieval": item.metadata.get("evidence_retrieval_score"),
+            "authority": item.metadata.get("evidence_authority_score"),
+            "cross_encoder": item.metadata.get("evidence_cross_encoder_score"),
+            "semantic": item.metadata.get("evidence_semantic_score"),
+            "entity_match": item.metadata.get("evidence_entity_match_score"),
+            "freshness": item.metadata.get("evidence_freshness_score"),
+            "ai_consistency": item.metadata.get("evidence_ai_consistency_score"),
+            "authority_type": item.metadata.get("evidence_authority"),
+        }
+        for item in ranked_evidence[:8]
+    ]
     return ranked_evidence, resolution
 
 
@@ -2722,8 +3489,8 @@ def _finalize_evidence_diagnostics(
 
 
 def _model_answer_aligns_with_answer(model_answer: str | None, answer: str | None) -> bool:
-    model_terms = set(query_terms(model_answer or ""))
-    answer_terms = set(query_terms(_remove_citation_text(_strip_model_knowledge_footer(answer or ""))))
+    model_terms = set(query_terms(_normalize_common_spelling(model_answer or "")))
+    answer_terms = set(query_terms(_normalize_common_spelling(_remove_citation_text(_strip_model_knowledge_footer(answer or "")))))
     if not model_terms or not answer_terms:
         return False
     overlap = len(model_terms & answer_terms) / max(1, min(len(model_terms), len(answer_terms)))
@@ -2743,41 +3510,52 @@ def _local_answer_supports_question(
     if not text:
         return False
     normalized = normalize_query(question)
-    query_terms = {term.lower() for term in normalized.key_terms if len(term) > 2}
+    query_terms = {
+        _normalize_common_spelling(term.lower())
+        for term in normalized.key_terms
+        if len(term) > 2
+    }
     entity_terms = {
-        term.lower()
+        _normalize_common_spelling(term.lower())
         for entity in normalized.entities
         for term in re.findall(r"[a-z0-9][a-z0-9'-]*", entity.lower())
         if len(term) > 2
     }
     cited_sources = _local_sources_used_in_answer(local_sources, answer) or list(local_sources[:3])
-    haystacks = [text.lower(), *[(source.text or "").lower() for source in cited_sources]]
+    haystacks = [
+        text.lower(),
+        *[
+            f"{getattr(source, 'document', '')} {getattr(source, 'text', '')}".lower()
+            for source in cited_sources
+        ],
+    ]
     combined = " ".join(haystacks)
+    combined = _normalize_common_spelling(combined)
     if cited_sources and any(marker in question.lower() for marker in WEB_REQUEST_MARKERS):
         return True
     if entity_terms and not any(term in combined for term in entity_terms):
         return False
     if not query_terms:
         return True
-    if len(query_terms) <= 1 and cited_sources:
-        return True
     overlap = {term for term in query_terms if term in combined}
+    if len(query_terms) <= 1:
+        return bool(overlap)
     minimum_overlap = 1 if len(query_terms) <= 3 else 2
     return len(overlap) >= minimum_overlap
 
 
 def _model_answer_supports_question(question: str, answer: str) -> bool:
-    text = (answer or "").strip().lower()
+    text = _normalize_common_spelling((answer or "").strip().lower())
     if not text:
         return False
     normalized = normalize_query(question)
     query_terms = [
-        term.lower()
+        _normalize_common_spelling(term.lower())
         for term in normalized.key_terms
         if len(term) > 2 and term.lower() not in {"web", "search", "online", "internet"}
     ]
     entity_terms = [
-        term.lower()
+        _normalize_common_spelling(term.lower())
         for entity in normalized.entities
         for term in re.findall(r"[a-z0-9][a-z0-9'-]*", entity.lower())
         if len(term) > 2
@@ -2790,6 +3568,28 @@ def _model_answer_supports_question(question: str, answer: str) -> bool:
     if len(query_terms) <= 2:
         return overlap >= 1
     return overlap >= min(2, len(query_terms))
+
+
+def _normalize_common_spelling(text: str) -> str:
+    value = text or ""
+    replacements = {
+        "optimisation": "optimization",
+        "optimise": "optimize",
+        "optimised": "optimized",
+        "optimising": "optimizing",
+        "organisation": "organization",
+        "organise": "organize",
+        "organised": "organized",
+        "organising": "organizing",
+        "behaviour": "behavior",
+        "colour": "color",
+        "analyse": "analyze",
+        "analysed": "analyzed",
+        "analysing": "analyzing",
+    }
+    for source, target in replacements.items():
+        value = re.sub(rf"\b{re.escape(source)}\b", target, value)
+    return value
 
 
 def _local_sources_used_in_answer(local_sources: Sequence[LocalSource], answer: str) -> list[LocalSource]:
@@ -3063,14 +3863,20 @@ def _looks_like_bare_entity_query(words):
 def _filter_local_sources_for_identity(sources, identity_tokens):
     if not identity_tokens:
         return list(sources)
-    return _relabel_local_sources(
-        [
-            source
-            for source in sources
-            if _source_matches_identity(f"{source.document} {source.text}", identity_tokens)
-            and _identity_local_source_is_relevant(source, identity_tokens)
-        ]
+    strict_lookup = _strict_person_lookup_tokens(identity_tokens)
+    relevant = [
+        source
+        for source in sources
+        if _identity_local_source_is_relevant(source, identity_tokens, strict_lookup=strict_lookup)
+    ]
+    relevant.sort(
+        key=lambda source: (
+            _source_identity_match_count(f"{source.document} {source.text}", identity_tokens),
+            float(getattr(source, "score", 0.0) or 0.0),
+        ),
+        reverse=True,
     )
+    return _relabel_local_sources(relevant)
 
 
 def _filter_relevant_local_sources(
@@ -3120,10 +3926,17 @@ def _filter_relevant_local_sources(
         semantic_score = float(source.score or 0.0)
         explicit_file_match = _source_matches_explicit_local_file_name(source, explicit_file_names)
 
-        if identity_tokens and not _source_matches_identity(
+        if (
+            not local_file_question
+            and not identity_tokens
+            and _looks_like_generic_knowledge_question(query)
+            and _is_private_identity_document_source(source)
+        ):
+            continue
+        if identity_tokens and not local_file_question and not _source_matches_identity(
             f"{source.document} {source.text}",
             identity_tokens,
-        ):
+        ) and not _passport_source_matches_identity_flex(source, identity_tokens):
             continue
         if identity_tokens and not local_file_question and not _identity_local_source_is_relevant(
             source,
@@ -3182,6 +3995,35 @@ def _normalized_source_text(source):
     )
 
 
+def _is_private_identity_document_source(source: LocalSource) -> bool:
+    context = _normalize_ocr_location_context(
+        " ".join(
+            _unique_nonempty(
+                [
+                    getattr(source, "document", ""),
+                    getattr(source, "title", ""),
+                    getattr(source, "text", ""),
+                    str(getattr(source, "metadata", {}) or {}),
+                ]
+            )
+        )
+    )
+    if not any(marker in context for marker in PRIVATE_IDENTITY_DOCUMENT_MARKERS):
+        return False
+    return _local_source_supports_identity_fact(source) or any(
+        marker in context
+        for marker in (
+            "date of issue",
+            "date of expiry",
+            "expiration",
+            "expiry",
+            "document number",
+            "passport number",
+            "nationality",
+        )
+    )
+
+
 def _normalized_source_tokens(source):
     return set(query_terms(_normalized_source_text(source)))
 
@@ -3194,6 +4036,7 @@ def _filter_web_sources_for_identity(sources, identity_tokens):
         for source in sources
         if not _is_noisy_web_source(source)
         and _source_matches_identity(f"{source.title} {source.url} {source.content}", identity_tokens)
+        and not _identity_source_has_contaminating_entity(source, identity_tokens)
     ]
     if len(filtered) <= 1:
         return _relabel_web_sources(filtered)
@@ -3240,26 +4083,57 @@ def _normalized_phrase_in_text(text: str, marker: str) -> bool:
 
 
 def _source_matches_identity(text, identity_tokens):
+    return _source_identity_match_count(text, identity_tokens) >= len(identity_tokens)
+
+
+def _source_identity_match_count(text, identity_tokens) -> int:
+    if not identity_tokens:
+        return 0
     source_tokens = set(re.findall(r"[a-z][a-z'’-]+", _fold_text(text)))
     folded_tokens = {_fold_identity_token(token) for token in source_tokens}
+    matches = 0
     for token in identity_tokens:
         folded = _fold_identity_token(token)
         if token in source_tokens or folded in folded_tokens:
+            matches += 1
             continue
         if len(token) >= 5 and any(
             SequenceMatcher(None, folded, candidate).ratio() >= 0.84
             for candidate in folded_tokens
         ):
-            continue
+            matches += 1
+    return matches
+
+
+def _minimum_identity_fact_matches(identity_tokens) -> int:
+    if not identity_tokens:
+        return 0
+    if len(identity_tokens) >= 3:
+        return 1
+    return 1
+
+
+def _strict_person_lookup_tokens(identity_tokens) -> bool:
+    return bool(identity_tokens and len(identity_tokens) >= 2)
+
+
+def _passport_source_matches_identity_flex(source, identity_tokens) -> bool:
+    if not identity_tokens or not _local_source_supports_identity_fact(source):
         return False
-    return True
+    context = f"{getattr(source, 'document', '')} {getattr(source, 'text', '')}"
+    match_count = _source_identity_match_count(context, identity_tokens)
+    return match_count >= _minimum_identity_fact_matches(identity_tokens)
 
 
-def _identity_local_source_is_relevant(source, identity_tokens) -> bool:
+def _identity_local_source_is_relevant(source, identity_tokens, *, strict_lookup: bool | None = None) -> bool:
+    strict_lookup = _strict_person_lookup_tokens(identity_tokens) if strict_lookup is None else strict_lookup
     text = _normalized_source_text(source)
     document = re.sub(r"[^a-z0-9]+", " ", getattr(source, "document", "").lower())
     contains_identity = _source_matches_identity(f"{document} {text}", identity_tokens)
-    if not contains_identity:
+    partial_identity_fact = _passport_source_matches_identity_flex(source, identity_tokens)
+    if not contains_identity and not partial_identity_fact:
+        return False
+    if strict_lookup and _identity_source_has_contaminating_entity(source, identity_tokens):
         return False
 
     signal_text = _strip_negated_identity_profile_markers(text)
@@ -3268,6 +4142,8 @@ def _identity_local_source_is_relevant(source, identity_tokens) -> bool:
     has_negative_signal = any(marker in text for marker in IDENTITY_LOCAL_NEGATIVE_MARKERS)
     document_has_identity = all(_fold_identity_token(token) in document for token in identity_tokens)
 
+    if partial_identity_fact:
+        return True
     if has_negative_signal and not has_strong_signal:
         return False
     if document_has_identity:
@@ -3277,6 +4153,62 @@ def _identity_local_source_is_relevant(source, identity_tokens) -> bool:
     if has_context_signal and _identity_appears_near_context_signal(source, identity_tokens):
         return True
     return False
+
+
+def _identity_source_has_contaminating_entity(source, identity_tokens) -> bool:
+    raw_text = f"{getattr(source, 'document', '')} {getattr(source, 'text', '')}"
+    folded = _fold_text(raw_text)
+    query_name = " ".join(_fold_identity_token(token) for token in identity_tokens)
+    reversed_query_name = " ".join(reversed(query_name.split()))
+    if _identity_phrase_present(folded, query_name) or _identity_phrase_present(folded, reversed_query_name):
+        return False
+    names = _candidate_person_names(raw_text)
+    query_token_set = {_fold_identity_token(token) for token in identity_tokens}
+    for name in names:
+        name_tokens = set(name.split())
+        overlap = len(name_tokens & query_token_set)
+        tolerated_overlap = min(2, len(name_tokens), len(query_token_set))
+        if name_tokens and overlap >= tolerated_overlap:
+            continue
+        if name_tokens:
+            return True
+    return False
+
+
+def _identity_phrase_present(text: str, phrase: str) -> bool:
+    normalized_text = f" {re.sub(r'[^a-z0-9]+', ' ', text or '').strip()} "
+    normalized_phrase = re.sub(r"[^a-z0-9]+", " ", phrase or "").strip()
+    return bool(normalized_phrase and f" {normalized_phrase} " in normalized_text)
+
+
+def _candidate_person_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for match in re.finditer(
+        r"\b([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,})\s+([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,})\b",
+        text or "",
+    ):
+        first, last = match.groups()
+        lowered = {first.lower(), last.lower()}
+        if lowered & IDENTITY_STOPWORDS:
+            continue
+        if lowered & {
+            "applied",
+            "birth",
+            "date",
+            "forecasting",
+            "name",
+            "passport",
+            "republic",
+            "sample",
+            "series",
+            "time",
+            "university",
+            "luxembourg",
+            "analysis",
+        }:
+            continue
+        names.add(" ".join(_fold_identity_token(part) for part in (first, last)))
+    return names
 
 
 def _strip_negated_identity_profile_markers(text: str) -> str:
@@ -4214,6 +5146,22 @@ def _local_file_search_queries(query):
     cleaned = _clean_local_file_query(query)
     lower = query.lower()
     queries = []
+    explicit_files = _explicit_local_file_names(query)
+    for file_name in explicit_files:
+        stem = Path(file_name).stem.replace("_", " ").replace("-", " ")
+        queries.extend([file_name, Path(file_name).stem, stem])
+        if cleaned and file_name not in cleaned.lower():
+            queries.append(f"{cleaned} {file_name}")
+    if _is_local_summary_request(query):
+        queries.extend(
+            [
+                cleaned,
+                f"{cleaned} summary" if cleaned else "document summary",
+                f"{cleaned} examples" if cleaned else "document examples",
+                "document overview",
+                "document summary",
+            ]
+        )
     specific_terms: list[str] = []
     for marker, expansions in LOCAL_FILE_EXPANSIONS.items():
         if marker not in lower:
@@ -4233,6 +5181,14 @@ def _local_file_ranking_query(query):
     cleaned = _clean_local_file_query(query)
     lower = query.lower()
     terms = [cleaned] if cleaned else []
+    for file_name in _explicit_local_file_names(query):
+        terms.extend(
+            [
+                file_name,
+                Path(file_name).stem,
+                Path(file_name).stem.replace("_", " ").replace("-", " "),
+            ]
+        )
     for marker, expansions in LOCAL_FILE_EXPANSIONS.items():
         if marker in lower:
             terms.extend(_specific_expansion_terms(expansions))

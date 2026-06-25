@@ -46,9 +46,11 @@ def inject_styles() -> None:
 }
 
 .block-container {
-  padding-top: 3.2rem;
-  padding-bottom: 2rem;
-  max-width: 1400px;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  max-width: 1120px !important;
+  padding: 2.2rem 2rem 7.4rem 2rem !important;
+  width: 100%;
 }
 
 h1, h2, h3 {
@@ -199,10 +201,57 @@ h1, h2, h3 {
   background: rgba(20, 23, 29, 0.78);
   border: 1px solid rgba(43, 48, 58, 0.85);
   border-radius: 8px;
+  overflow: hidden;
+  width: 100%;
 }
 
 [data-testid="stChatMessage"] p {
   color: var(--veri-text);
+}
+
+[data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+  max-width: none !important;
+}
+
+[data-testid="stChatInput"] {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 1120px;
+  width: calc(100vw - 380px);
+}
+
+[data-testid="stBottom"] {
+  background:
+    linear-gradient(180deg, rgba(11, 13, 16, 0), rgba(11, 13, 16, .96) 28%),
+    rgba(11, 13, 16, .96);
+  border-top: 1px solid rgba(43, 48, 58, .75);
+}
+
+[data-testid="stBottom"] > div {
+  margin-left: auto !important;
+  margin-right: auto !important;
+  max-width: 1120px !important;
+  padding: .75rem 2rem 1rem 2rem !important;
+  width: 100%;
+}
+
+[data-testid="stChatInput"] textarea {
+  background-color: #12161c !important;
+  border: 1px solid rgba(255, 107, 95, .92) !important;
+  border-radius: 8px !important;
+  color: var(--veri-text) !important;
+  min-height: 2.45rem !important;
+  -webkit-text-fill-color: var(--veri-text) !important;
+}
+
+[data-testid="stChatInput"] textarea::placeholder {
+  color: var(--veri-muted) !important;
+  opacity: .82;
+}
+
+[data-testid="stChatInput"] button {
+  color: var(--veri-coral) !important;
 }
 
 .veri-answer-heading {
@@ -572,6 +621,32 @@ h1, h2, h3 {
 
 a {
   color: var(--veri-teal) !important;
+}
+
+@media (max-width: 900px) {
+  [data-testid="stSidebar"] {
+    min-width: 280px;
+    max-width: 280px;
+  }
+
+  [data-testid="stSidebar"] > div:first-child {
+    min-width: 280px;
+    max-width: 280px;
+  }
+
+  .block-container {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+  }
+
+  [data-testid="stBottom"] > div {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+  }
+
+  [data-testid="stChatInput"] {
+    width: calc(100vw - 2rem);
+  }
 }
 </style>
         """,

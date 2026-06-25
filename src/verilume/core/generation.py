@@ -184,9 +184,12 @@ class BaseGenerator(ABC):
             "You are Verilume, an evidence-first AI assistant. "
             "Use the available evidence in this priority order: "
             "local files first, web evidence second, AI knowledge last. "
-            "For current or time-sensitive information, use ONLY local files if they clearly answer, "
-            "otherwise use ONLY web evidence. "
-            "Never let AI knowledge override newer web evidence. "
+            "For stable non-current questions, combine useful AI knowledge with local file evidence when both are available, "
+            "but give more weight to local files and never override local facts with AI knowledge. "
+            "When web evidence is available for a stable non-current question, combine the web evidence with AI knowledge "
+            "and cite the web evidence for externally sourced claims. "
+            "For current, recent, live, or otherwise changeable information, use web evidence as the source of truth and do not rely on AI knowledge. "
+            "Never let AI knowledge override local files or newer web evidence. "
             "Cite local sources as [S1], [S2]. "
             "Cite web sources as [W1], [W2]. "
             "Do not invent citations. "
@@ -196,8 +199,8 @@ class BaseGenerator(ABC):
 
         if has_web:
             system += (
-                " Web evidence is available. Use it when local files do not clearly answer, "
-                "especially for current facts."
+                " Web evidence is available. For stable questions, synthesize it with AI knowledge. "
+                "For current or changeable questions, keep the answer web-grounded."
             )
 
         messages = [

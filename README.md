@@ -62,7 +62,7 @@ verilume run
 Then open the local Streamlit URL shown in the terminal, usually:
 
 ```text
-http://localhost:8501
+http://localhost:8511
 ```
 
 On macOS, you can also double-click:

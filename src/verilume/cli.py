@@ -16,6 +16,10 @@ from verilume.settings import AppSettings
 from verilume.utils.document_stats import collect_document_stats
 from verilume.utils.logging import configure_logging
 
+STREAMLIT_HOST = "127.0.0.1"
+STREAMLIT_BROWSER_ADDRESS = "localhost"
+STREAMLIT_PORT = 8511
+
 
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
@@ -54,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_streamlit() -> int:
     app_path = files("verilume").joinpath("app.py")
+    streamlit_args = _streamlit_cli_args(app_path)
     if getattr(sys, "frozen", False):
         _patch_streamlit_for_frozen_bundle()
 
@@ -61,12 +66,9 @@ def run_streamlit() -> int:
 
         sys.argv = [
             "streamlit",
-            "run",
-            str(app_path),
+            *streamlit_args,
             "--global.developmentMode",
             "false",
-            "--server.fileWatcherType",
-            "none",
         ]
         try:
             return int(streamlit_main() or 0)
@@ -78,16 +80,30 @@ def run_streamlit() -> int:
                 sys.executable,
                 "-m",
                 "streamlit",
-                "run",
-                str(app_path),
-                "--server.fileWatcherType",
-                "none",
+                *streamlit_args,
             ],
             check=False,
         )
         return process.returncode
     except KeyboardInterrupt:
         return 130
+
+
+def _streamlit_cli_args(app_path: object) -> list[str]:
+    return [
+        "run",
+        str(app_path),
+        "--server.address",
+        STREAMLIT_HOST,
+        "--server.port",
+        str(STREAMLIT_PORT),
+        "--browser.serverAddress",
+        STREAMLIT_BROWSER_ADDRESS,
+        "--server.fileWatcherType",
+        "none",
+        "--browser.gatherUsageStats",
+        "false",
+    ]
 
 
 def _patch_streamlit_for_frozen_bundle() -> None:

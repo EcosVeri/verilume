@@ -1,5 +1,8 @@
 [server]
+address = "127.0.0.1"
+port = 8511
 fileWatcherType = "none"
 
 [browser]
+serverAddress = "localhost"
 gatherUsageStats = false

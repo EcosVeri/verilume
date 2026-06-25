@@ -158,6 +158,45 @@ class ChromaRetriever:
             lexical_k=lexical_k or max(k * 6, 30),
         )
 
+    def sample_sources_by_document(
+        self,
+        *,
+        chunks_per_document: int = 2,
+        limit_documents: int | None = None,
+    ) -> list[LocalSource]:
+        """Return representative indexed chunks grouped by source document."""
+        if self.count() == 0:
+            return []
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        for item in self._all_items():
+            metadata = item.get("metadata") or {}
+            document = str(metadata.get("document") or "Unknown document")
+            grouped[document].append(item)
+
+        sources: list[LocalSource] = []
+        document_items = list(grouped.items())
+        if limit_documents is not None:
+            document_items = document_items[: max(0, int(limit_documents))]
+        for document_index, (_document, items) in enumerate(document_items, start=1):
+            ranked_items = sorted(
+                items,
+                key=lambda item: (
+                    _metadata_page(item.get("metadata") or {}),
+                    str(item.get("id") or ""),
+                ),
+            )
+            for chunk_index, item in enumerate(ranked_items[: max(1, int(chunks_per_document))], start=1):
+                source = _local_source_from_raw(
+                    text=item.get("document") or "",
+                    metadata=item.get("metadata") or {},
+                    chunk_id=str(item.get("id") or ""),
+                    score=1.0,
+                    rank=(document_index * 1000) + chunk_index,
+                    retrieval="corpus",
+                )
+                sources.append(source)
+        return _relabel(sources)
+
     def _dense_search(self, query: str, k: int, score_threshold: float) -> list[LocalSource]:
         query_embedding = self.embeddings.embed_query(query)
         result = self.collection.query(
@@ -473,6 +512,16 @@ def _local_source_from_raw(
         score=float(score),
         metadata=meta,
     )
+
+
+def _metadata_page(metadata: dict) -> int:
+    value = metadata.get("page")
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except Exception:
+        return 999999
 
 
 def _source_key(source: LocalSource) -> str:

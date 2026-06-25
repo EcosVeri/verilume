@@ -6,7 +6,9 @@ from datetime import date
 from verilume.core.evidence import (
     EvidenceAuthority,
     EvidenceItem,
+    EvidencePolicy,
     EvidenceSourceType,
+    FactType,
     QueryType,
     build_final_answer_payload,
     classify_question,
@@ -34,9 +36,35 @@ class EvidenceLayerTests(unittest.TestCase):
         query = classify_question("sofia loizidou")
 
         self.assertEqual(query.primary_type, QueryType.GENERAL)
+        self.assertEqual(query.fact_type, FactType.PERSON_LOOKUP)
         self.assertTrue(query.personal_company_entity_lookup)
         self.assertTrue(query.requires_web_validation)
         self.assertFalse(query.requires_date_reconciliation)
+
+    def test_classifies_population_and_gdp_as_dynamic_without_current_word(self) -> None:
+        population = classify_question("What is the population of Europe?")
+        gdp = classify_question("GDP of France")
+
+        self.assertEqual(population.fact_type, FactType.DYNAMIC)
+        self.assertTrue(population.requires_date_reconciliation)
+        self.assertFalse(population.ai_knowledge_allowed_as_final)
+        self.assertEqual(gdp.fact_type, FactType.DYNAMIC)
+        self.assertTrue(gdp.requires_web_validation)
+        self.assertEqual(gdp.evidence_policy, EvidencePolicy.WEB_ONLY)
+
+    def test_classifies_local_docs_database_summary_as_local_only(self) -> None:
+        query = classify_question("summarise the docs in the database")
+
+        self.assertEqual(query.fact_type, FactType.LOCAL_DOCUMENT)
+        self.assertEqual(query.evidence_policy, EvidencePolicy.LOCAL_ONLY)
+        self.assertTrue(query.local_file_question)
+
+    def test_person_lookup_records_entity_terms_and_policy(self) -> None:
+        query = classify_question("Who is Damian Mingo Ndiwago?")
+
+        self.assertEqual(query.fact_type, FactType.PERSON_LOOKUP)
+        self.assertEqual(query.evidence_policy, EvidencePolicy.LOCAL_MODEL_WEB)
+        self.assertEqual(query.entity_terms, ["damian", "mingo", "ndiwago"])
 
     def test_converts_existing_sources_to_evidence_items(self) -> None:
         local = LocalSource(
@@ -70,6 +98,66 @@ class EvidenceLayerTests(unittest.TestCase):
         self.assertEqual(items[1].citation(), "[W1]")
         self.assertEqual(items[1].authority, EvidenceAuthority.OFFICIAL)
         self.assertTrue(items[2].is_ai_knowledge)
+
+    def test_authority_scoring_distinguishes_university_wikipedia_blog_and_model(self) -> None:
+        university = EvidenceItem(
+            source_type=EvidenceSourceType.WEB,
+            title="University profile",
+            content="Professor profile.",
+            url="https://uni.lu/profile",
+            semantic_relevance_score=0.8,
+            citation_label="W1",
+        )
+        wikipedia = EvidenceItem(
+            source_type=EvidenceSourceType.WEB,
+            title="Wikipedia article",
+            content="Biography.",
+            url="https://en.wikipedia.org/wiki/Example",
+            semantic_relevance_score=0.8,
+            citation_label="W2",
+        )
+        blog = EvidenceItem(
+            source_type=EvidenceSourceType.WEB,
+            title="Personal blog",
+            content="Opinion.",
+            url="https://example.com/blog/post",
+            semantic_relevance_score=0.8,
+            citation_label="W3",
+        )
+        model = EvidenceItem.from_ai_knowledge("Model background.")
+
+        ranked = rank_evidence([blog, model, wikipedia, university], "Example professor profile")
+        by_label = {item.citation_label: item for item in ranked}
+
+        self.assertEqual(university.authority, EvidenceAuthority.UNIVERSITY)
+        self.assertGreater(by_label["W1"].metadata["evidence_authority_score"], by_label["W2"].metadata["evidence_authority_score"])
+        self.assertGreater(by_label["W2"].metadata["evidence_authority_score"], by_label["W3"].metadata["evidence_authority_score"])
+        self.assertGreater(by_label["W1"].metadata["evidence_authority_score"], by_label["AI"].metadata["evidence_authority_score"])
+
+    def test_person_lookup_demotes_passport_against_university_profile(self) -> None:
+        passport = EvidenceItem(
+            source_type=EvidenceSourceType.LOCAL_CHUNK,
+            title="DamianMingopassport.pdf",
+            content="Passport document with surname MINGO NDIWAGO, date of birth, and place of issue.",
+            semantic_relevance_score=0.82,
+            citation_label="S1",
+        )
+        profile = EvidenceItem(
+            source_type=EvidenceSourceType.WEB,
+            title="University profile",
+            content="Damian Mingo Ndiwago doctoral researcher profile at the university.",
+            url="https://uni.lu/damian-mingo-ndiwago",
+            semantic_relevance_score=0.86,
+            citation_label="W1",
+        )
+
+        ranked = rank_evidence([passport, profile], "Ndiwago Damian")
+
+        self.assertEqual(ranked[0].citation(), "[W1]")
+        self.assertEqual(ranked[1].citation(), "[S1]")
+        self.assertGreater(ranked[0].metadata["evidence_entity_match_score"], 0.0)
+        self.assertIn("evidence_cross_encoder_score", ranked[0].metadata)
+        self.assertIn("evidence_ai_consistency_score", ranked[0].metadata)
 
     def test_newer_official_web_evidence_ranks_above_stale_local_for_current_fact(self) -> None:
         local = EvidenceItem(

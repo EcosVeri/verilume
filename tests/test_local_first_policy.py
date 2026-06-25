@@ -107,11 +107,11 @@ class LocalFirstWorkflowTests(unittest.TestCase):
         rag._search_duckduckgo_fallback_queries = lambda queries: []
         return rag
 
-    def test_stable_question_uses_model_before_web(self) -> None:
+    def test_stable_question_combines_model_and_web_when_web_enabled(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
             model_answer="Econometrics applies statistical methods to economic data.",
-            web_answer="Econometrics combines statistics and economics [W1]",
+            web_answer="Econometrics applies statistical methods to economic data and combines statistics and economics [W1]",
             local_sources=[],
             web_sources=[
                 WebSource(
@@ -127,16 +127,16 @@ class LocalFirstWorkflowTests(unittest.TestCase):
 
         self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertFalse(result.used_web)
-        self.assertEqual(result.confidence, "model-only")
-        self.assertEqual(result.diagnostics.get("evidence_winner"), "model_knowledge")
+        self.assertTrue(result.used_web)
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
+        self.assertEqual(result.diagnostics.get("evidence_winner"), "hybrid")
         self.assertIn("Econometrics", result.answer)
 
     def test_explicit_web_request_uses_web_after_local_and_model(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN,
-            model_answer=MODEL_UNKNOWN,
-            web_answer="Econometrics combines statistics and economics [W1]",
+            model_answer="Econometrics applies statistical methods to economic data.",
+            web_answer="Econometrics applies statistical methods to economic data and combines statistics and economics [W1]",
             local_sources=[],
             web_sources=[
                 WebSource(
@@ -153,6 +153,7 @@ class LocalFirstWorkflowTests(unittest.TestCase):
         self.assertGreater(len(rag.retriever.calls), 0)
         self.assertEqual(len(rag.generator.model_calls), 1)
         self.assertTrue(result.used_web)
+        self.assertTrue(result.diagnostics["used_model_knowledge"])
         self.assertIn("[W1]", result.answer)
 
     def test_current_government_question_uses_web_but_checks_local_first(self) -> None:
@@ -173,8 +174,9 @@ class LocalFirstWorkflowTests(unittest.TestCase):
         result = rag.ask("Who is the current prime minister of Luxembourg?")
 
         self.assertGreater(len(rag.retriever.calls), 0)
-        self.assertEqual(len(rag.generator.model_calls), 1)
-        self.assertTrue(result.diagnostics["parallel_model_with_web"])
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertFalse(result.diagnostics["parallel_model_with_web"])
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
         self.assertTrue(result.used_web)
         self.assertIn("Luc Frieden", result.answer)
 
@@ -211,6 +213,31 @@ class LocalFirstWorkflowTests(unittest.TestCase):
         self.assertEqual(result.confidence, "low")
         self.assertNotIn("Sam Altman", result.answer)
         self.assertIn("AI knowledge is not reliable enough for current facts", result.answer)
+
+    def test_dynamic_fact_without_current_word_uses_web_not_model_primary(self) -> None:
+        rag = self._make_rag(
+            local_answer=LOCAL_UNKNOWN,
+            model_answer="Europe has about 740 million people.",
+            web_answer="The population of Europe is reported by the web evidence [W1].",
+            local_sources=[],
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="Europe population data",
+                    url="https://example.org/europe-population",
+                    content="The population of Europe is reported by this current dataset.",
+                )
+            ],
+        )
+
+        result = rag.ask("What is the population of Europe?")
+
+        self.assertGreater(len(rag.retriever.calls), 0)
+        self.assertTrue(result.used_web)
+        self.assertEqual(len(rag.generator.model_calls), 0)
+        self.assertTrue(result.diagnostics["model_skipped_for_current_web"])
+        self.assertEqual(result.diagnostics["fact_type"], "dynamic_fact")
+        self.assertIn("[W1]", result.answer)
 
     def test_explicit_web_failure_falls_back_to_local_answer(self) -> None:
         rag = self._make_rag(local_answer="Local answer [S1]")

@@ -8,12 +8,13 @@ Verilume lets users upload documents, build a local knowledge base, ask question
 
 ## App Preview
 
-Verilume launches straight into the research workspace, with model status, local library metrics, source controls, chat actions, and export options visible from the first screen.
+Verilume launches straight into the dark research workspace, with model status, local library metrics, source controls, chat actions, and export options visible from the first screen.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/verilume-launch-dark.png">
-  <img src="docs/assets/verilume-launch-light.png" alt="Verilume launch screen showing the sidebar, status pills, research actions, and chat input.">
-</picture>
+![Verilume dark launch screen showing the sidebar, status pills, research actions, and chat input.](docs/assets/verilume-launch-dark.png)
+
+Tap the moon/sun appearance toggle in the top-right corner to switch between dark and light previews.
+
+![Verilume light launch screen after using the appearance toggle.](docs/assets/verilume-launch-light.png)
 
 ## Privacy
 

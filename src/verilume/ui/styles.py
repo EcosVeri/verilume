@@ -63,6 +63,15 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
             "veri-ai-text": "#6540a0",
             "veri-amber-text": "#825400",
             "veri-evidence-text": "#9f2f24",
+            "veri-sidebar-width": "320px",
+            "veri-command-width": "min(860px, calc(100vw - var(--veri-sidebar-width) - 96px))",
+            "veri-command-bottom": "28px",
+            "veri-command-height": "46px",
+            "veri-command-shadow": "0 8px 26px rgba(31, 41, 55, .14)",
+            "veri-command-focus-shadow": (
+                "0 0 0 3px rgba(199, 138, 26, .18), "
+                "0 8px 26px rgba(31, 41, 55, .16)"
+            ),
         }
         gradient = "linear-gradient(180deg, rgba(199, 138, 26, 0.08) 0%, rgba(248, 249, 251, 0) 280px)"
     else:
@@ -97,6 +106,15 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
             "veri-ai-text": "#dcc8ff",
             "veri-amber-text": "#ffe3a3",
             "veri-evidence-text": "#ffc7c2",
+            "veri-sidebar-width": "320px",
+            "veri-command-width": "min(860px, calc(100vw - var(--veri-sidebar-width) - 96px))",
+            "veri-command-bottom": "28px",
+            "veri-command-height": "46px",
+            "veri-command-shadow": "0 8px 30px rgba(0, 0, 0, .35)",
+            "veri-command-focus-shadow": (
+                "0 0 0 3px rgba(255, 200, 87, .16), "
+                "0 8px 30px rgba(0, 0, 0, .28)"
+            ),
         }
         gradient = "linear-gradient(180deg, rgba(255, 200, 87, 0.08) 0%, rgba(11, 13, 16, 0) 280px)"
     variables = "\n".join(f"  --{name}: {value};" for name, value in tokens.items())
@@ -157,7 +175,7 @@ html {
   margin-right: auto !important;
   padding-top: 2rem !important;
   padding-right: 2rem !important;
-  padding-bottom: 8rem !important;
+  padding-bottom: 180px !important;
   padding-left: 2rem !important;
   width: 100%;
 }
@@ -182,18 +200,97 @@ h1, h2, h3 {
   text-align: right;
 }
 
+.veri-dashboard-toggle-wrap {
+  margin: .15rem 0 .25rem 0;
+  text-align: right;
+}
+
+.veri-dark-button-anchor {
+  height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.veri-prompt-button-wrap {
+  margin-top: .44rem;
+}
+
 .veri-theme-toggle-wrap + div button,
-.veri-theme-toggle-wrap + div [data-testid="baseButton-secondary"] {
+.veri-theme-toggle-wrap + div [data-testid="baseButton-secondary"],
+.veri-dashboard-toggle-wrap + div button,
+.veri-dashboard-toggle-wrap + div [data-testid="baseButton-secondary"],
+div:has(.veri-dark-button-anchor) + div button,
+div:has(.veri-dark-button-anchor) + div [data-testid="baseButton-secondary"],
+div:has(.veri-dark-button-anchor) + div [data-testid="stButton"] button {
   background: var(--veri-panel-2) !important;
+  background-color: var(--veri-panel-2) !important;
   border: 1px solid var(--veri-line) !important;
   border-radius: 999px !important;
   color: var(--veri-text) !important;
   min-height: 2.3rem !important;
   min-width: 2.6rem !important;
+  -webkit-text-fill-color: var(--veri-text) !important;
 }
 
+.veri-dashboard-toggle-wrap + div button,
+.veri-dashboard-toggle-wrap + div [data-testid="baseButton-secondary"],
+div:has(.veri-dark-button-anchor) + div button,
+div:has(.veri-dark-button-anchor) + div [data-testid="baseButton-secondary"],
+div:has(.veri-dark-button-anchor) + div [data-testid="stButton"] button {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
+  font-size: .84rem !important;
+  font-weight: 760 !important;
+}
+
+.veri-dashboard-toggle-wrap + div button *,
+.veri-dashboard-toggle-wrap + div [data-testid="baseButton-secondary"] *,
+div:has(.veri-dark-button-anchor) + div button *,
+div:has(.veri-dark-button-anchor) + div [data-testid="baseButton-secondary"] *,
+div:has(.veri-dark-button-anchor) + div [data-testid="stButton"] button * {
+  color: inherit !important;
+  -webkit-text-fill-color: currentColor !important;
+}
+
+.veri-dashboard-toggle-wrap + div button:hover,
+.veri-dashboard-toggle-wrap + div [data-testid="baseButton-secondary"]:hover,
+div:has(.veri-dark-button-anchor) + div button:hover,
+div:has(.veri-dark-button-anchor) + div [data-testid="baseButton-secondary"]:hover,
+div:has(.veri-dark-button-anchor) + div [data-testid="stButton"] button:hover {
+  border-color: var(--veri-amber) !important;
+  color: var(--veri-amber) !important;
+  -webkit-text-fill-color: var(--veri-amber) !important;
+}
+
+[data-testid="stButton"] button,
+[data-testid="stDownloadButton"] button,
 button[kind="secondary"][data-testid="baseButton-secondary"] {
+  background: var(--veri-panel-2) !important;
+  background-color: var(--veri-panel-2) !important;
+  border: 1px solid var(--veri-line) !important;
   color: var(--veri-text) !important;
+  -webkit-text-fill-color: var(--veri-text) !important;
+}
+
+button[kind="secondary"][data-testid="baseButton-secondary"] *,
+button[kind="secondary"][data-testid="baseButton-secondary"] [data-testid="stMarkdownContainer"] p,
+.stButton > button *,
+.stButton > button [data-testid="stMarkdownContainer"] p,
+.stDownloadButton > button *,
+.stDownloadButton > button [data-testid="stMarkdownContainer"] p,
+[data-testid="stButton"] button *,
+[data-testid="stButton"] button [data-testid="stMarkdownContainer"] p,
+[data-testid="stDownloadButton"] button *,
+[data-testid="stDownloadButton"] button [data-testid="stMarkdownContainer"] p {
+  color: inherit !important;
+  -webkit-text-fill-color: currentColor !important;
+}
+
+[data-testid="stButton"] button:hover,
+[data-testid="stDownloadButton"] button:hover,
+button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
+  border-color: var(--veri-amber) !important;
+  color: var(--veri-amber) !important;
+  -webkit-text-fill-color: var(--veri-amber) !important;
 }
 
 .veri-brand,
@@ -567,16 +664,32 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   color: var(--veri-text) !important;
 }
 
+.veri-command-dock {
+  bottom: var(--veri-command-bottom);
+  left: calc(var(--veri-sidebar-width) + ((100vw - var(--veri-sidebar-width)) / 2));
+  pointer-events: auto;
+  position: fixed;
+  transform: translateX(-50%);
+  width: var(--veri-command-width);
+  z-index: 9999;
+}
+
 [data-testid="stChatInput"] {
   background: var(--veri-input-bg) !important;
   border: 1px solid var(--veri-line) !important;
   border-radius: 999px !important;
-  margin-left: auto;
-  margin-right: auto;
-  max-width: 1280px;
   animation: veri-soft-pulse 3.6s ease-in-out infinite;
+  bottom: var(--veri-command-bottom) !important;
+  box-shadow: var(--veri-command-shadow);
+  left: calc(var(--veri-sidebar-width) + ((100vw - var(--veri-sidebar-width)) / 2)) !important;
+  margin: 0 !important;
+  max-width: var(--veri-command-width) !important;
+  position: fixed !important;
+  pointer-events: auto !important;
+  transform: translateX(-50%) !important;
   transition: border-color .16s ease, box-shadow .16s ease, background-color .16s ease;
-  width: calc(100vw - 380px);
+  width: var(--veri-command-width) !important;
+  z-index: 9999 !important;
 }
 
 [data-testid="stChatInput"]:hover,
@@ -585,12 +698,14 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
 }
 
 [data-testid="stChatInput"]:focus-within {
-  box-shadow: 0 0 0 3px rgba(255, 200, 87, .14) !important;
+  box-shadow: var(--veri-command-focus-shadow) !important;
 }
 
 [data-testid="stBottom"] {
   background: var(--veri-bottom-bg) !important;
   border-top: 0;
+  min-height: calc(var(--veri-command-height) + var(--veri-command-bottom) + 24px);
+  pointer-events: none;
 }
 
 [data-testid="stBottom"] > div {
@@ -598,7 +713,8 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   margin-left: auto !important;
   margin-right: auto !important;
   max-width: 1280px !important;
-  padding: .75rem 2rem 1rem 2rem !important;
+  padding: 0 !important;
+  pointer-events: none;
   width: 100%;
 }
 
@@ -608,6 +724,7 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
 [data-testid="stChatInput"] [data-baseweb="textarea"] > div {
   background: var(--veri-input-bg) !important;
   border-radius: 999px !important;
+  pointer-events: auto;
 }
 
 [data-testid="stChatInput"] textarea {
@@ -615,11 +732,10 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   border: 0 !important;
   border-radius: 999px !important;
   color: var(--veri-input-text) !important;
-  min-height: 3rem !important;
-  padding-top: .86rem !important;
-  padding-bottom: .86rem !important;
-  padding-left: 1.15rem !important;
-  padding-right: 3.25rem !important;
+  line-height: 1.3 !important;
+  max-height: 140px !important;
+  min-height: var(--veri-command-height) !important;
+  padding: .7rem 3.2rem .7rem 1rem !important;
   -webkit-text-fill-color: var(--veri-input-text) !important;
   box-shadow: none !important;
   outline: none !important;
@@ -648,11 +764,13 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   border-radius: 999px !important;
   color: var(--veri-amber) !important;
   display: inline-flex !important;
-  height: 2.35rem !important;
+  height: 2rem !important;
   justify-content: center !important;
-  margin-right: .32rem !important;
+  margin-bottom: 3px !important;
+  margin-right: 8px !important;
+  pointer-events: auto !important;
   transition: background-color .16s ease, color .16s ease, transform .16s ease;
-  width: 2.35rem !important;
+  width: 2rem !important;
 }
 
 [data-testid="stChatInput"] button:hover {
@@ -1071,6 +1189,7 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   border-radius: 8px !important;
   border: 1px solid var(--veri-line) !important;
   background: var(--veri-panel-2) !important;
+  background-color: var(--veri-panel-2) !important;
   color: var(--veri-button-text) !important;
   font-weight: 740 !important;
   min-height: 2.35rem;
@@ -1094,6 +1213,12 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
   color: var(--veri-primary-text) !important;
   border: 0 !important;
   font-weight: 700;
+}
+
+.stButton > button[kind="primary"] *,
+.stButton > button[kind="primary"] [data-testid="stMarkdownContainer"] p {
+  color: var(--veri-primary-text) !important;
+  -webkit-text-fill-color: var(--veri-primary-text) !important;
 }
 
 .stTextInput input,
@@ -1568,6 +1693,12 @@ a {
 }
 
 @media (max-width: 900px) {
+  :root {
+    --veri-sidebar-width: 0px;
+    --veri-command-width: calc(100vw - 32px);
+    --veri-command-bottom: 18px;
+  }
+
   [data-testid="stSidebar"] {
     min-width: 280px;
     max-width: 280px;
@@ -1585,12 +1716,7 @@ a {
   }
 
   [data-testid="stBottom"] > div {
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
-  }
-
-  [data-testid="stChatInput"] {
-    width: calc(100vw - 2rem);
+    padding: 0 !important;
   }
 }
 </style>

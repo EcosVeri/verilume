@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import logging
-from html import escape
 
 import streamlit as st
 
+from verilume.core.document_index import IndexedDocument, build_document_index
+from verilume.core.prompt_suggestions import generate_suggested_prompts
 from verilume.ingest import DocumentIngestor, removable_documents, remove_documents, save_uploaded_file
+from verilume.ingest import document_metadata_from_manifest
 from verilume.rag import get_rag_service
 from verilume.settings import AppSettings, ensure_app_dirs
 from verilume.ui.chat import render_chat
+from verilume.ui.dashboard import (
+    recent_activity_from_messages,
+    render_dashboard,
+    render_empty_document_state,
+)
 from verilume.ui.header import render_header
 from verilume.ui.sidebar import SidebarState, render_sidebar
 from verilume.ui.styles import inject_styles
@@ -43,11 +50,34 @@ def main() -> None:
     _handle_ingestion(sidebar)
 
     stats = _collect_document_stats_cached(sidebar.settings)
-    render_header(sidebar.settings, stats)
-    _render_metrics(stats)
-    _render_workspace_summary(sidebar.settings, stats)
-    _render_empty_document_state(stats)
-    render_chat(sidebar.settings)
+    document_index = _current_document_index(sidebar.settings)
+    recent_documents = removable_documents(sidebar.settings.docs_dir)[-4:][::-1]
+    recent_activity = recent_activity_from_messages(st.session_state.get("messages", []))
+    suggested_prompts = generate_suggested_prompts(
+        document_index,
+        recent_activity,
+        sidebar.settings,
+    )
+
+    header_slot = st.container()
+    dashboard_slot = st.container()
+    document_state_slot = st.container()
+    chat_slot = st.container()
+
+    with header_slot:
+        render_header(sidebar.settings, stats)
+    with dashboard_slot:
+        render_dashboard(
+            sidebar.settings,
+            stats,
+            recent_documents,
+            recent_activity,
+            suggested_prompts,
+        )
+    with document_state_slot:
+        render_empty_document_state(stats)
+    with chat_slot:
+        render_chat(sidebar.settings, suggested_prompts)
 
 
 def _password_ok(settings: AppSettings) -> bool:
@@ -162,89 +192,17 @@ def _release_rag_retriever(settings: AppSettings) -> None:
             LOGGER.debug("Failed to close cached retriever before local store mutation.", exc_info=True)
 
 
+def _current_document_index(settings: AppSettings) -> list[IndexedDocument]:
+    try:
+        return build_document_index(document_metadata_from_manifest(settings))
+    except Exception:
+        LOGGER.debug("Failed to build prompt document index.", exc_info=True)
+        return []
+
+
 @st.cache_data(ttl=60)
 def _collect_document_stats_cached(settings: AppSettings) -> dict[str, int]:
     return collect_document_stats(settings)
-
-
-def _render_metrics(stats: dict[str, int]) -> None:
-    cards = (
-        ("📄", stats.get("uploaded_documents", 0), "Documents"),
-        ("📚", stats.get("pdf_pages", 0), "Pages"),
-        ("🧩", stats.get("chunks_indexed", 0), "Chunks"),
-    )
-    rendered = "".join(
-        (
-            '<div class="veri-metric-card">'
-            f'<div class="veri-metric-icon">{icon}</div>'
-            f'<div class="veri-metric-value">{int(value or 0):,}</div>'
-            f'<div class="veri-metric-label">{label}</div>'
-            "</div>"
-        )
-        for icon, value, label in cards
-    )
-    st.markdown(f'<div class="veri-metric-grid">{rendered}</div>', unsafe_allow_html=True)
-
-
-def _render_workspace_summary(settings: AppSettings, stats: dict[str, int]) -> None:
-    documents = removable_documents(settings.docs_dir)
-    recent_docs = documents[-4:][::-1]
-    doc_items = "".join(
-        f'<div class="veri-mini-row"><span>📄</span><strong>{escape(name)}</strong></div>'
-        for name in recent_docs
-    ) or '<div class="veri-mini-muted">Upload documents to start building your local library.</div>'
-    messages = st.session_state.get("messages", [])
-    recent_questions = [
-        str(message.get("content", "")).strip()
-        for message in reversed(messages)
-        if message.get("role") == "user" and str(message.get("content", "")).strip()
-    ][:3]
-    activity_items = "".join(
-        f'<div class="veri-mini-row"><span>⌘</span><strong>{escape(item[:72])}</strong></div>'
-        for item in recent_questions
-    ) or '<div class="veri-mini-muted">Recent searches will appear here.</div>'
-    quick_prompts = (
-        "Summarise dic.pdf",
-        "List indexed documents",
-        "Compare local evidence",
-    )
-    prompt_items = "".join(f"<span>{escape(prompt)}</span>" for prompt in quick_prompts)
-    st.markdown(
-        f"""
-<div class="veri-workspace-grid">
-  <div class="veri-workspace-card">
-    <div class="veri-workspace-kicker">Recent Documents</div>
-    {doc_items}
-  </div>
-  <div class="veri-workspace-card">
-    <div class="veri-workspace-kicker">Recent Activity</div>
-    {activity_items}
-  </div>
-  <div class="veri-workspace-card">
-    <div class="veri-workspace-kicker">Suggested Prompts</div>
-    <div class="veri-prompt-chip-row">{prompt_items}</div>
-  </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_empty_document_state(stats: dict[str, int]) -> None:
-    if stats.get("uploaded_documents", 0) > 0:
-        return
-    st.markdown(
-        """
-<div class="veri-empty-state">
-  <div class="veri-empty-state-title">No local documents indexed yet</div>
-  <div class="veri-empty-state-body">
-    Upload documents in the sidebar to ground answers in your own files.
-    Web research and model knowledge remain available when configured.
-  </div>
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 if __name__ == "__main__":

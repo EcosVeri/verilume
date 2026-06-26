@@ -52,7 +52,16 @@ from verilume.core.benchmark import (
     make_benchmark_result,
 )
 from verilume.core.citation_verifier import CitationVerificationAgent
+from verilume.core.claim_verification import verify_claim_support
 from verilume.core.conversation_state import ConversationState
+from verilume.core.document_index import build_document_index
+from verilume.core.document_retrieval import (
+    DocumentMatch,
+    detect_requested_document,
+    document_matches_to_sources,
+    rank_documents,
+    requested_document_names,
+)
 from verilume.core.embeddings import EmbeddingService
 from verilume.core.entity_filter import is_short_entity_query, source_matches_entity
 from verilume.core.evidence import (
@@ -1823,52 +1832,51 @@ class VerilumeRAG:
         return _relabel_local_sources(sources)
 
     def _document_summary_sources(self, question: str) -> list[LocalSource]:
-        if not (_is_local_summary_request(question) or _is_local_corpus_overview_request(question)):
+        if not (
+            _is_local_summary_request(question)
+            or _is_local_corpus_overview_request(question)
+            or _should_answer_local_file_question_directly(question)
+        ):
             return []
         try:
-            documents = document_metadata_from_manifest(self.settings)
+            documents = build_document_index(document_metadata_from_manifest(self.settings))
         except Exception:
             return []
         if not documents:
             return []
 
-        explicit_files = _explicit_local_file_names(question)
-        if explicit_files:
-            documents = [
-                metadata
-                for metadata in documents
-                if _document_metadata_matches_explicit_file(metadata, explicit_files)
+        match_result = detect_requested_document(question, documents)
+        if match_result.matches and not match_result.ambiguous:
+            matches = match_result.matches[: max(1, int(getattr(self.settings, "retriever_k", 5)))]
+        elif _is_local_corpus_overview_request(question):
+            matches = [
+                *rank_documents(
+                    question,
+                    documents,
+                    limit=max(1, int(getattr(self.settings, "retriever_k", 5))),
+                )
             ]
-        sources: list[LocalSource] = []
-        for index, metadata in enumerate(documents, start=1):
-            if not str(metadata.summary or "").strip():
-                continue
-            text = _document_metadata_source_text(metadata)
-            if not text.strip():
-                continue
-            source = LocalSource(
-                label=f"S{index}",
-                document=metadata.document,
-                page=None,
-                chunk_id=f"document-summary:{metadata.source_path or metadata.document}",
-                text=text,
-                score=1.0,
-                metadata={
-                    "document_summary": True,
-                    "document_title": metadata.title,
-                    "document_level_summary": metadata.summary,
-                    "keywords": ", ".join(metadata.keywords),
-                    "document_keywords": metadata.keywords,
-                    "document_pages": metadata.pages,
-                    "document_chunks": metadata.chunks,
-                    "authors": metadata.authors,
-                    "document_kind": metadata.document_kind,
-                    "source_path": metadata.source_path,
-                    "retrieval": "document-summary",
-                },
+            if not matches:
+                matches = [
+                    DocumentMatch(
+                        document=document,
+                        score=1.0,
+                        reason="document-level summary metadata",
+                        requested_name="",
+                    )
+                    for document in documents
+                ]
+        else:
+            matches = rank_documents(
+                question,
+                documents,
+                limit=max(1, int(getattr(self.settings, "retriever_k", 5))),
             )
-            sources.append(source)
-        return _relabel_local_sources(sources)
+
+        matches = [match for match in matches if str(match.document.summary or "").strip()]
+        if not matches:
+            return []
+        return _relabel_local_sources(document_matches_to_sources(matches))
 
     def _rerank_local(self, query: str, sources: Sequence[LocalSource]) -> list[LocalSource]:
         return rerank_local_sources(
@@ -2105,10 +2113,28 @@ class VerilumeRAG:
 
     def _answer_local_file_question(self, question: str, local_sources: list[LocalSource], diagnostics: dict, on_stage=None) -> RAGResponse:
         corpus_overview = _is_local_corpus_overview_request(question)
+        document_match_result = self._document_match_result(question)
+        if document_match_result and document_match_result.ambiguous:
+            diagnostics["document_match_ambiguous"] = True
+            diagnostics["document_match_candidates"] = [
+                {
+                    "document": match.document.filename,
+                    "score": round(match.score, 4),
+                    "reason": match.reason,
+                }
+                for match in document_match_result.matches[:5]
+            ]
+            answer = _ambiguous_document_answer(document_match_result.matches)
+            return RAGResponse(answer, [], [], False, "clarification", diagnostics)
+
         document_summary_sources = self._document_summary_sources(question)
         if document_summary_sources:
             diagnostics["document_summary_sources"] = len(document_summary_sources)
             diagnostics["document_summary_mode"] = True
+            diagnostics["document_match_reasons"] = _unique_nonempty(
+                str((source.metadata or {}).get("document_match_reason") or "")
+                for source in document_summary_sources
+            )
             local_sources = _merge_local_sources(
                 document_summary_sources,
                 local_sources,
@@ -2286,6 +2312,15 @@ class VerilumeRAG:
             "Confidence: High",
         ]
         return RAGResponse("\n".join(lines), [], [], False, "local-grounded", diagnostics)
+
+    def _document_match_result(self, question: str):
+        try:
+            documents = build_document_index(document_metadata_from_manifest(self.settings))
+        except Exception:
+            return None
+        if not documents:
+            return None
+        return detect_requested_document(question, documents)
 
     def _search_web_sources(
         self,
@@ -2520,7 +2555,7 @@ class VerilumeRAG:
             "where",
             "which",
         )
-        if _explicit_local_file_names(lower) and any(
+        if (_explicit_local_file_names(lower) or requested_document_names(lower)) and any(
             marker in lower
             for marker in (
                 "summarise",
@@ -2987,9 +3022,18 @@ def _is_local_summary_request(question: str) -> bool:
         return False
     if _is_local_corpus_overview_request(question):
         return True
-    if _explicit_local_file_names(question) and any(
+    if (_explicit_local_file_names(question) or requested_document_names(question)) and any(
         marker in normalized
-        for marker in ("summarise", "summarize", "summaries", "summary", "describe", "tell me about")
+        for marker in (
+            "summarise",
+            "summarize",
+            "summaries",
+            "summary",
+            "describe",
+            "tell me about",
+            "what is in",
+            "what's in",
+        )
     ):
         return True
     return any(
@@ -3113,6 +3157,16 @@ def _document_level_summary_answer(
     return "\n".join(lines)
 
 
+def _ambiguous_document_answer(matches: Sequence[DocumentMatch]) -> str:
+    lines = [
+        "I found multiple indexed documents that could match that filename. Please choose one:",
+    ]
+    for match in matches[:5]:
+        lines.append(f"- {match.document.filename} ({match.reason}, score {match.score:.2f})")
+    lines.extend(["", "Confidence: Low"])
+    return "\n".join(lines)
+
+
 def _group_local_sources_by_document(local_sources: Sequence[LocalSource]) -> dict[str, list[LocalSource]]:
     grouped: dict[str, list[LocalSource]] = {}
     for source in local_sources:
@@ -3200,8 +3254,13 @@ def _local_win_reasons(
     settings: AppSettings,
 ) -> list[str]:
     reasons: list[str] = []
-    if _explicit_local_file_names(question):
+    if _explicit_local_file_names(question) or requested_document_names(question):
         reasons.append("exact filename match")
+    match_reasons = _unique_nonempty(
+        str((source.metadata or {}).get("document_match_reason") or "")
+        for source in local_sources
+    )
+    reasons.extend(match_reasons)
     if any((source.metadata or {}).get("document_summary") for source in local_sources):
         reasons.append("document-level summary metadata")
     if local_sources:
@@ -4386,8 +4445,22 @@ def _finalize_evidence_diagnostics(
     enabled_count = sum(1 for enabled in (used_local, used_model, used_web) if enabled)
     if enabled_count >= 2:
         diagnostics["evidence_winner"] = "hybrid"
+        diagnostics["hybrid_win_reasons"] = _unique_nonempty(
+            [
+                "local and web/model evidence both contributed",
+                "multiple evidence streams were available",
+            ]
+        )
     elif used_web:
         diagnostics["evidence_winner"] = "web"
+        diagnostics["web_win_reasons"] = _unique_nonempty(
+            [
+                "web evidence used",
+                "current or external evidence was required"
+                if diagnostics.get("requires_date_reconciliation") or diagnostics.get("used_web")
+                else "",
+            ]
+        )
     elif used_local:
         diagnostics["evidence_winner"] = "local"
     elif used_model:
@@ -4402,6 +4475,17 @@ def _finalize_evidence_diagnostics(
             policy=diagnostics.get("evidence_policy"),
         )
     )
+    claim_support = verify_claim_support(
+        answer,
+        local_sources=used_local_sources,
+        web_sources=used_web_sources,
+    )
+    diagnostics["claim_support"] = [item.to_dict() for item in claim_support]
+    diagnostics["claim_support_summary"] = {
+        "supported": sum(1 for item in claim_support if item.verdict == "supported"),
+        "weakly_supported": sum(1 for item in claim_support if item.verdict == "weakly_supported"),
+        "unsupported": sum(1 for item in claim_support if item.verdict == "unsupported"),
+    }
 
 
 def _model_answer_aligns_with_answer(model_answer: str | None, answer: str | None) -> bool:

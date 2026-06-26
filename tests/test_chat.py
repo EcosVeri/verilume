@@ -10,6 +10,7 @@ from verilume.settings import AppSettings
 from verilume.ui.chat import (
     _answer_origin,
     _chat_placeholder,
+    _consume_pending_prompt,
     _display_answer,
     _evidence_badges,
     _evidence_detail_rows,
@@ -77,6 +78,15 @@ class ChatInteractionTests(unittest.TestCase):
             placeholder = _chat_placeholder(AppSettings(search_mode="Local Only"))
 
         self.assertEqual(placeholder, "📄 Local Only  Search local files...")
+
+    def test_pending_prompt_is_consumed_once(self) -> None:
+        session_state = {"pending_prompt": "  List indexed documents  "}
+
+        with patch("verilume.ui.chat.st.session_state", session_state):
+            self.assertEqual(_consume_pending_prompt(), "List indexed documents")
+            self.assertIsNone(_consume_pending_prompt())
+
+        self.assertNotIn("pending_prompt", session_state)
 
     def test_partition_message_history_keeps_recent_messages_visible(self) -> None:
         archived_timestamp = (datetime.now().astimezone() - timedelta(days=4)).isoformat(

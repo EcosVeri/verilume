@@ -5,14 +5,33 @@ build-backend = "hatchling.build"
 [project]
 name = "verilume"
 version = "0.1.0"
-description = "Local-first Streamlit RAG assistant with Chroma, Hugging Face generation, configurable web search, and exports."
+description = "Local-first AI research assistant with hybrid retrieval, transparent evidence, and source-grounded answers."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "Damian Mingo Ndiwago" }
 ]
-keywords = ["rag", "streamlit", "chroma", "huggingface", "web-search"]
+keywords = [
+  "rag",
+  "retrieval-augmented-generation",
+  "local-ai",
+  "research-assistant",
+  "evidence-based-ai",
+  "hybrid-search",
+  "semantic-search",
+  "document-ai",
+  "ocr",
+  "multimodal",
+  "streamlit",
+  "chromadb",
+  "huggingface",
+  "llm",
+  "offline-ai",
+  "citation",
+  "document-retrieval",
+  "knowledge-management",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: End Users/Desktop",

@@ -1,113 +1,89 @@
-# ✅ Verilume TODO
+# Verilume TODO
 
-This document tracks upcoming work.
-
----
-
-# High Priority
-
-- [ ] Automatic hybrid retrieval
-- [ ] Better web/local source fusion
-- [ ] Improve confidence estimation
-- [ ] Better reranking
-- [ ] OCR ingestion
-- [ ] Image embeddings
-- [ ] Scanned PDF ingestion
-- [ ] Better metadata extraction
-- [ ] Better citation formatting
-- [ ] Conversation search
+Remaining work for making Verilume easier to install, extend, and trust as a
+local-first research assistant.
 
 ---
 
-# Retrieval
+# Release Priorities
 
-- [ ] BM25 retrieval
-- [ ] Dense retrieval
-- [ ] Reciprocal Rank Fusion
-- [ ] Cross Encoder reranking
-- [ ] Hybrid search weighting
-- [ ] Query expansion
-- [ ] Query decomposition
-
----
-
-# AI
-
-- [ ] Reflection prompting
-- [ ] Self-consistency
-- [ ] Answer verification
-- [ ] Hallucination detection
-- [ ] Structured reasoning
+- Ship a single downloadable macOS desktop installer (`.dmg` or `.pkg`).
+- Sign and notarize the macOS app so end users can install it normally.
+- Publish `verilume` to PyPI.
+- Add automated smoke tests for installing from GitHub and PyPI.
+- Add a Windows installer or executable if Windows packaging tests pass.
+- Automate releases with builds, checksums, and smoke tests.
 
 ---
 
-# Vision
+# Ollama and Local Models
 
-- [ ] OCR
-- [ ] Image captioning
-- [ ] Figure understanding
-- [ ] Table extraction
-- [ ] Diagram understanding
-- [ ] Formula recognition
+Ollama support exists in the app. These remaining tasks focus on setup clarity,
+model discovery, and offline-friendly use.
 
----
-
-# UI
-
-- [ ] Dark/light themes
-- [ ] Chat search
-- [ ] Source filtering
-- [ ] Better citations
-- [ ] Keyboard shortcuts
-- [ ] Drag & drop uploads
-- [ ] Streaming tokens
-- [ ] Better mobile layout
+- Show clearly whether Ollama is installed and running.
+- Show the Ollama models already available in the local Ollama runtime.
+- If a selected Ollama model is missing, show the exact command to install it.
+- Add a one-click local-only mode that uses Ollama and turns web search off.
+- Explain Ollama in the app as a local AI runtime.
 
 ---
 
-# Documents
+# Other Model Support
 
-- [ ] Excel
-- [ ] PowerPoint
-- [ ] HTML
-- [ ] XML
-- [ ] EPUB
-- [ ] JSON
-- [ ] ZIP archives
+- Add independently developed online model providers alongside hosted APIs.
+- Add setup screens for any future model provider that needs keys, endpoints, or model IDs.
 
 ---
 
-# Integrations
+# Retrieval and Answers
 
-- [ ] GitHub
-- [ ] Google Drive
-- [ ] OneDrive
-- [ ] Dropbox
-- [ ] Notion
-- [ ] Confluence
-- [ ] SharePoint
-
----
-
-# Developer Experience
-
-- [ ] Plugin system
-- [ ] Python SDK
-- [ ] REST API
-- [ ] Docker images
-- [ ] GitHub Actions
-- [ ] CI/CD
-- [ ] Unit tests
-- [ ] Benchmark suite
+- Tune ranking thresholds using real document collections.
+- Improve entity verification for difficult person, company, and same-name lookups.
+- Improve query decomposition for complex multi-part questions.
+- Add two-stage retrieval: choose the best document first, then the best chunks.
+- Add persisted document summaries for summary-first retrieval.
+- Add broader semantic duplicate clustering across mirrored or repeated web sources.
+- Expand answer verification tests for edge cases and conflicting evidence.
+- Add clearer user messages when evidence is weak or incomplete.
 
 ---
 
-# Nice to Have
+# Documents and Vision
 
-- [ ] Voice assistant
-- [ ] Mobile app
-- [ ] Browser extension
-- [ ] Email assistant
-- [ ] Slack integration
-- [ ] Teams integration
+- Improve metadata extraction beyond the current manifest and extracted fields.
+- Improve visual understanding beyond the current OCR, formula, and fallback-caption path.
+- Add support for Excel, HTML, XML, EPUB, JSON, and ZIP archives.
 
+---
+
+# App Experience
+
+- Add conversation search.
+- Add source filtering.
+- Add a document explorer.
+- Add clickable page-level highlights for local citations.
+- Add search suggestions and autocomplete.
+- Add keyboard shortcuts.
+- Add streaming tokens.
+- Add preference memory for recurring user choices.
+- Add opt-in anonymous latency analytics.
+- Improve mobile layout.
+
+---
+
+# Integrations and Platform
+
+- Add GitHub, Google Drive, OneDrive, Dropbox, Notion, Confluence, and SharePoint connectors.
+- Add a plugin system, Python SDK, and REST API.
+- Add Docker images for advanced deployments.
+- Expand benchmarks for retrieval quality and ingestion speed.
+
+---
+
+# Later
+
+- Voice assistant.
+- Mobile app.
+- Browser extension.
+- Email, Slack, and Teams assistants.

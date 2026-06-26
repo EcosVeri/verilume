@@ -1531,6 +1531,118 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(rag.web_search.queries, [])
         self.assertIn("exact filename match", result.diagnostics["local_win_reasons"])
 
+    def test_extensionless_filename_summary_uses_document_metadata(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "documents"
+            docs_dir.mkdir()
+            manifest_path = root / "manifest.json"
+            kruschke_path = docs_dir / "kruschke2012.pdf"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        str(kruschke_path): {
+                            "hash": "kruschke",
+                            "chunks": 220,
+                            "pdf_pages": 672,
+                            "document_metadata": {
+                                "document": "kruschke2012.pdf",
+                                "title": "Doing Bayesian Data Analysis",
+                                "summary": "Bayesian data analysis textbook covering MCMC, posterior inference, and model diagnostics.",
+                                "keywords": ["Bayesian inference", "MCMC", "posterior"],
+                                "pages": 672,
+                                "chunks": 220,
+                                "source_path": str(kruschke_path),
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rag = self._make_rag(
+                local_answer=LOCAL_UNKNOWN,
+                model_answer="Model answer that should not be used.",
+                local_sources=[],
+            )
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=docs_dir,
+                manifest_path=manifest_path,
+            )
+
+            result = rag.ask("what is in kruschke2012")
+
+        self.assertEqual(result.confidence, "local-grounded")
+        self.assertFalse(result.used_web)
+        self.assertIn("Doing Bayesian Data Analysis", result.answer)
+        self.assertIn("posterior inference", result.answer)
+        self.assertEqual([source.document for source in result.local_sources], ["kruschke2012.pdf"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertIn("extension-insensitive filename match", result.diagnostics["local_win_reasons"])
+
+    def test_ambiguous_extensionless_filename_asks_for_clarification(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            docs_dir = root / "documents"
+            docs_dir.mkdir()
+            manifest_path = root / "manifest.json"
+            dic = docs_dir / "dic.pdf"
+            dic_notes = docs_dir / "dic_notes.pdf"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        str(dic): {
+                            "hash": "dic",
+                            "chunks": 8,
+                            "pdf_pages": 12,
+                            "document_metadata": {
+                                "document": "dic.pdf",
+                                "title": "Dictionary",
+                                "summary": "Dictionary summary.",
+                                "keywords": ["dictionary"],
+                                "pages": 12,
+                                "chunks": 8,
+                                "source_path": str(dic),
+                            },
+                        },
+                        str(dic_notes): {
+                            "hash": "dic-notes",
+                            "chunks": 4,
+                            "pdf_pages": 5,
+                            "document_metadata": {
+                                "document": "dic_notes.pdf",
+                                "title": "Dictionary Notes",
+                                "summary": "Notes summary.",
+                                "keywords": ["dictionary", "notes"],
+                                "pages": 5,
+                                "chunks": 4,
+                                "source_path": str(dic_notes),
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rag = self._make_rag(local_answer=LOCAL_UNKNOWN, local_sources=[])
+            rag.settings = AppSettings(
+                hf_token="token",
+                enable_web_search=False,
+                docs_dir=docs_dir,
+                manifest_path=manifest_path,
+            )
+
+            result = rag.ask("summarise dic")
+
+        self.assertEqual(result.confidence, "clarification")
+        self.assertIn("Please choose one", result.answer)
+        self.assertIn("dic.pdf", result.answer)
+        self.assertIn("dic_notes.pdf", result.answer)
+        self.assertTrue(result.diagnostics["document_match_ambiguous"])
+        self.assertEqual(rag.generator.local_calls, [])
+        self.assertEqual(rag.generator.model_calls, [])
+
     def test_examples_from_local_files_uses_local_evidence(self) -> None:
         example_source = LocalSource(
             label="S1",

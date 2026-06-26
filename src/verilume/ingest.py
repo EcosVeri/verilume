@@ -742,15 +742,44 @@ def _extract_keywords(text: str, settings: AppSettings | None = None) -> str:
 
 def _infer_document_kind(path: Path, text: str) -> str:
     haystack = f"{path.name} {text[:4000]}".lower()
+    suffix = path.suffix.lower()
+    if suffix in _PRESENTATION_EXTENSIONS:
+        return "presentation"
+    if suffix == ".csv":
+        return "spreadsheet"
+    if suffix in _IMAGE_EXTENSIONS:
+        return "image_document"
+    if any(marker in haystack for marker in ("passport", "identity card", "id card", "nationality")):
+        return "identity_document"
+    if any(marker in haystack for marker in ("invoice", "line item", "total due", "amount due", "vat")):
+        return "invoice"
     if any(marker in haystack for marker in ("doctoral thesis", "phd thesis", "dissertation")):
         return "thesis"
-    if any(marker in haystack for marker in ("abstract", "journal", "doi", "references")):
-        return "research_paper"
+    if any(marker in haystack for marker in ("abstract", "journal", "doi", "references", "methodology")):
+        return "scientific_paper"
     if any(marker in haystack for marker in ("certificate", "attestation", "exam payment")):
         return "certificate"
-    if any(marker in haystack for marker in ("manual", "guide", "training", "certification prep")):
+    if any(marker in haystack for marker in ("textbook", "worked example", "exercise", "chapter")):
+        return "textbook"
+    if any(marker in haystack for marker in ("manual", "guide", "handbook", "training", "certification prep")):
         return "manual"
-    return "document"
+    if any(marker in haystack for marker in ("policy", "procedure", "compliance")):
+        return "policy"
+    if any(marker in haystack for marker in ("contract", "agreement", "terms and conditions")):
+        return "contract"
+    if any(marker in haystack for marker in ("meeting minutes", "attendees", "action items")):
+        return "meeting_minutes"
+    if any(marker in haystack for marker in ("report", "recommendations", "findings")):
+        return "report"
+    if any(marker in haystack for marker in ("dear ", "sincerely", "letter")):
+        return "letter"
+    if any(marker in haystack for marker in ("notes", "notebook")):
+        return "notes"
+    if "book" in haystack:
+        return "book"
+    if "article" in haystack:
+        return "article"
+    return "unknown"
 
 
 def _section_heading(chunk: str) -> str:

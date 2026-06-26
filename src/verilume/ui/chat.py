@@ -71,7 +71,10 @@ def init_chat_state() -> None:
         st.session_state.chat_placeholder_example = random.choice(CHAT_PLACEHOLDER_EXAMPLES)
 
 
-def render_chat(settings: AppSettings) -> None:
+def render_chat(
+    settings: AppSettings,
+    _suggested_prompts: object | None = None,
+) -> None:
     init_chat_state()
 
     regenerate_prompt = None
@@ -86,14 +89,18 @@ def render_chat(settings: AppSettings) -> None:
         _generate_assistant_response(settings, regenerate_prompt)
         return
 
-    suggested_prompt = None
     if not st.session_state.messages:
-        suggested_prompt = _render_welcome_screen()
+        _render_welcome_screen()
 
-    prompt = suggested_prompt or st.chat_input(_chat_placeholder(settings))
+    manual_prompt = st.chat_input(_chat_placeholder(settings))
+    prompt = _consume_pending_prompt() or manual_prompt
     if not prompt:
         return
 
+    _handle_prompt(settings, prompt)
+
+
+def _handle_prompt(settings: AppSettings, prompt: str) -> None:
     st.session_state.messages.append(
         {"role": "user", "content": prompt, "timestamp": _now_timestamp()}
     )
@@ -111,6 +118,14 @@ def _chat_placeholder(settings: AppSettings) -> str:
         or random.choice(CHAT_PLACEHOLDER_EXAMPLES)
     )
     return f"{icon} {mode}  {example}"
+
+
+def _consume_pending_prompt() -> str | None:
+    prompt = st.session_state.pop("pending_prompt", None)
+    if prompt is None:
+        return None
+    prompt_text = str(prompt).strip()
+    return prompt_text or None
 
 
 def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
@@ -233,7 +248,7 @@ def _render_toolbar(settings: AppSettings) -> None:
             )
 
 
-def _render_welcome_screen() -> str | None:
+def _render_welcome_screen() -> None:
     st.markdown(
         """
 <div class="veri-welcome">
@@ -249,18 +264,6 @@ def _render_welcome_screen() -> str | None:
         """,
         unsafe_allow_html=True,
     )
-    prompts = (
-        "List indexed documents",
-        "Summarise dic.pdf",
-        "Compare local and web evidence",
-        "What changed in my latest upload?",
-    )
-    cols = st.columns(4)
-    for index, (col, prompt) in enumerate(zip(cols, prompts, strict=True), start=1):
-        with col:
-            if st.button(prompt, key=f"welcome-prompt-{index}", use_container_width=True):
-                return prompt
-    return None
 
 
 def _loading_stage_html(label: str) -> str:
@@ -407,13 +410,13 @@ def _render_evidence_summary(response: RAGResponse) -> None:
         if rendered_strength
         else ""
     )
-    local_win_reasons = _summary_value_list(diagnostics.get("local_win_reasons"))
+    reason_title, win_reasons = _winner_reasons(diagnostics)
     reasons_block = ""
-    if local_win_reasons:
-        rendered_reasons = "".join(f"<li>✓ {escape(reason)}</li>" for reason in local_win_reasons)
+    if win_reasons:
+        rendered_reasons = "".join(f"<li>✓ {escape(reason)}</li>" for reason in win_reasons)
         reasons_block = (
             '<div class="veri-evidence-reasons">'
-            "<strong>Why Local Won</strong>"
+            f"<strong>{escape(reason_title)}</strong>"
             f"<ul>{rendered_reasons}</ul>"
             "</div>"
         )
@@ -421,6 +424,7 @@ def _render_evidence_summary(response: RAGResponse) -> None:
     searched = _summary_source_list(diagnostics.get("sources_searched"))
     used = _summary_source_list(diagnostics.get("sources_used"))
     winner = _friendly_token(str(diagnostics.get("evidence_winner") or ""))
+    claim_support = _claim_support_summary(diagnostics)
     summary_rows = "".join(
         (
             '<div class="veri-evidence-summary-row">'
@@ -433,6 +437,7 @@ def _render_evidence_summary(response: RAGResponse) -> None:
             ("Sources searched", searched),
             ("Sources used", used),
             ("Winner", winner),
+            ("Claim support", claim_support),
         )
         if value
     )
@@ -449,6 +454,33 @@ def _render_evidence_summary(response: RAGResponse) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _winner_reasons(diagnostics: dict[str, Any]) -> tuple[str, list[str]]:
+    winner = str(diagnostics.get("evidence_winner") or "").lower()
+    if winner == "web":
+        return "Why Web Won", _summary_value_list(diagnostics.get("web_win_reasons"))
+    if winner == "hybrid":
+        reasons = _summary_value_list(diagnostics.get("hybrid_win_reasons"))
+        if not reasons:
+            reasons = _summary_value_list(diagnostics.get("local_win_reasons"))
+        return "Why Hybrid Won", reasons
+    return "Why Local Won", _summary_value_list(diagnostics.get("local_win_reasons"))
+
+
+def _claim_support_summary(diagnostics: dict[str, Any]) -> str:
+    summary = diagnostics.get("claim_support_summary") or {}
+    if not isinstance(summary, dict):
+        return ""
+    supported = int(summary.get("supported") or 0)
+    weak = int(summary.get("weakly_supported") or 0)
+    unsupported = int(summary.get("unsupported") or 0)
+    total = supported + weak + unsupported
+    if total <= 0:
+        return ""
+    if weak or unsupported:
+        return f"{supported}/{total} supported, {weak} weak, {unsupported} unsupported"
+    return f"{supported}/{total} supported"
 
 
 def _supporting_source_count_label(source_count: int) -> str:

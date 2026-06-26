@@ -1,6 +1,6 @@
 # 🔭 Verilume Vision
 
-> **Answers powered by local retrieval, trusted AI generation, and transparent sources.**
+> **A local-first desktop knowledge assistant with transparent sources and open model choice.**
 
 ---
 
@@ -10,7 +10,16 @@ Artificial intelligence is transforming how people access and interact with info
 
 **Verilume exists to change that.**
 
-Our vision is to build an open, transparent, privacy-first AI knowledge platform that combines local documents, trusted web information, and state-of-the-art language models into a single intelligent assistant.
+Our vision is to build an open, transparent, privacy-first AI knowledge platform
+that combines local documents, trusted web information, local models, and
+independently developed online models into a single intelligent assistant.
+
+Verilume should be easy enough for a non-programmer to install, launch, and use:
+
+* a single downloadable macOS desktop app;
+* a Python package installable from PyPI;
+* a GitHub install path for developers and early adopters;
+* a Windows executable or installer if Windows packaging proves reliable.
 
 Every answer should be:
 
@@ -18,6 +27,7 @@ Every answer should be:
 * **Transparent** about its sources.
 * **Current** when information changes.
 * **Private** whenever possible.
+* **Independent** from any one model vendor or hosted-only API.
 * **Open** for everyone to inspect, improve, and extend.
 
 ---
@@ -80,7 +90,26 @@ Whenever possible:
 * embeddings should remain local
 * vector databases should remain local
 
-Cloud services should always be optional—not mandatory.
+Cloud services should always be optional—not mandatory. Verilume should support
+local backends like Ollama and independently developed online providers alongside
+larger hosted model services.
+
+---
+
+## 🧩 Open Model Choice
+
+Users should be able to choose the model path that fits their situation.
+
+Verilume should support
+
+* Hugging Face models;
+* Ollama local models;
+* independently developed online model providers;
+* future local runtimes and open inference servers.
+
+The product should avoid hard dependency on hosted-only APIs. Independently
+developed online models can be useful, but they should be one option, not the
+foundation of the system.
 
 ---
 
@@ -168,6 +197,16 @@ We envision Verilume becoming an open platform capable of
 
 ✅ Hybrid retrieval
 
+✅ First-class Ollama support
+
+✅ Independently developed online model providers
+
+✅ Single downloadable macOS desktop installer
+
+✅ PyPI and GitHub package installation
+
+✅ Windows executable or installer where feasible
+
 ✅ Vision-language understanding
 
 ✅ OCR
@@ -254,5 +293,4 @@ Together, we can build an AI assistant that is not only powerful—but also trus
 
 ---
 
-> **Verilume — Answers powered by local retrieval, trusted AI generation, and transparent sources.**
-
+> **Verilume — local-first answers, open model choice, and transparent sources.**

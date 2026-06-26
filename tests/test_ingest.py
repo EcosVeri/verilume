@@ -89,7 +89,7 @@ class IngestCleanupTests(unittest.TestCase):
         self.assertIn("Alex Jordan Sample", metadata["authors"])
         self.assertIn("combines Hamiltonian Monte Carlo", metadata["abstract"])
         self.assertIn("Replica Exchange", metadata["keywords"])
-        self.assertEqual(metadata["document_kind"], "research_paper")
+        self.assertEqual(metadata["document_kind"], "scientific_paper")
 
     def test_document_level_summary_is_manifest_ready(self) -> None:
         text = """

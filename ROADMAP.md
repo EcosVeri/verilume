@@ -2,7 +2,8 @@
 
 > Answers powered by local retrieval, trusted AI generation, and transparent sources.
 
-This roadmap outlines the planned evolution of Verilume. Features may change as the community grows.
+This roadmap outlines the planned evolution of Verilume. Features may change as
+the community grows.
 
 ---
 
@@ -28,7 +29,20 @@ Core retrieval-augmented generation platform.
 
 ---
 
-# Version 1.1 — Smarter Retrieval
+# Version 1.1 — Installable Desktop + Model Choice
+
+- [ ] Single downloadable macOS installer (`.dmg` or `.pkg`)
+- [ ] Signed and notarized macOS `.app`
+- [ ] PyPI package release
+- [ ] GitHub source install with `pip install git+https://...`
+- [ ] First-class Ollama local generation support
+- [ ] Independent online model provider support alongside Hugging Face
+- [ ] Windows executable or installer feasibility build on Windows
+- [ ] Release artifacts with checksums and smoke tests
+
+---
+
+# Version 1.2 — Smarter Retrieval
 
 - [ ] Automatic hybrid search
 - [ ] Better retrieval ranking
@@ -41,7 +55,7 @@ Core retrieval-augmented generation platform.
 
 ---
 
-# Version 1.2 — Multimodal Knowledge Base
+# Version 1.3 — Multimodal Knowledge Base
 
 - [ ] OCR support
 - [ ] Image understanding
@@ -54,7 +68,7 @@ Core retrieval-augmented generation platform.
 
 ---
 
-# Version 1.3 — Research Assistant
+# Version 1.4 — Research Assistant
 
 - [ ] Literature review mode
 - [ ] Automatic paper summarization
@@ -66,7 +80,7 @@ Core retrieval-augmented generation platform.
 
 ---
 
-# Version 1.4 — Agentic Workflows
+# Version 1.5 — Agentic Workflows
 
 - [ ] Planning agent
 - [ ] Web research agent
@@ -116,6 +130,8 @@ Core retrieval-augmented generation platform.
 # Version 3.0 — Local AI Platform
 
 - [ ] Local LLM serving
+- [ ] Ollama-native workflows
+- [ ] Independent online provider marketplace
 - [ ] Vision models
 - [ ] Audio transcription
 - [ ] Speech interface
@@ -138,4 +154,6 @@ Verilume aims to become an open-source AI workspace where users can:
 - Generate reports
 - Build AI workflows
 - Run everything locally whenever possible
-
+- Install Verilume as a polished desktop app on macOS
+- Install Verilume as a Python package from PyPI or GitHub
+- Use a Windows executable if the Windows build pipeline proves reliable

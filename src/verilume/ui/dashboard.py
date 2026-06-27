@@ -29,9 +29,7 @@ def render_dashboard(
         st.session_state["dashboard_collapsed"] = DEFAULT_DASHBOARD_COLLAPSED
 
     dashboard_collapsed = bool(st.session_state.get("dashboard_collapsed", False))
-    col_spacer, col_toggle = st.columns([5, 1])
-    with col_spacer:
-        st.empty()
+    _col_spacer, col_toggle = st.columns([5, 1])
     with col_toggle:
         button_label = "Expand dashboard" if dashboard_collapsed else "Collapse dashboard"
         st.markdown('<div class="veri-dark-button-anchor veri-dashboard-toggle-wrap"></div>', unsafe_allow_html=True)

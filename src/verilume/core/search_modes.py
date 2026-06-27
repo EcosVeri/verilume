@@ -23,6 +23,7 @@ def search_mode_from_settings(value: str | SearchMode | None) -> SearchMode:
     text = " ".join(text.split())
     aliases = {
         "auto": SearchMode.AUTO,
+        "auto recommended": SearchMode.AUTO,
         "default": SearchMode.AUTO,
         "local": SearchMode.LOCAL_ONLY,
         "local only": SearchMode.LOCAL_ONLY,
@@ -32,6 +33,7 @@ def search_mode_from_settings(value: str | SearchMode | None) -> SearchMode:
         "local ai web": SearchMode.LOCAL_AI_WEB,
         "local model web": SearchMode.LOCAL_AI_WEB,
         "hybrid": SearchMode.LOCAL_AI_WEB,
+        "hybrid local ai web": SearchMode.LOCAL_AI_WEB,
         "web": SearchMode.WEB_ONLY,
         "web only": SearchMode.WEB_ONLY,
         "research": SearchMode.RESEARCH,

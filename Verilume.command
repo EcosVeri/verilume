@@ -26,48 +26,56 @@ echo "Starting Verilume from $APP_DIR"
 echo "Target URL: $APP_URL"
 echo "Use this launcher for local development; README.md is direct and concise."
 
-function verilume_is_running() {
+function verilume_port_pids() {
   if command -v lsof >/dev/null 2>&1; then
-    if lsof -ti "TCP:${VERILUME_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+    lsof -ti "TCP:${VERILUME_PORT}" -sTCP:LISTEN 2>/dev/null || true
+  fi
+}
+
+function wait_for_port_to_close() {
+  local attempt
+  for attempt in {1..20}; do
+    if [[ -z "$(verilume_port_pids)" ]]; then
       return 0
     fi
-  fi
-
-  local attempt
-  for attempt in {1..8}; do
-    if command -v curl >/dev/null 2>&1; then
-      if curl --fail --silent --show-error --max-time 3 "$APP_URL" >/dev/null 2>&1; then
-        return 0
-      fi
-    else
-
-      if python3 - "$APP_URL" <<'PY'
-import sys
-from urllib.request import urlopen
-
-url = sys.argv[1]
-try:
-    with urlopen(url, timeout=1.5) as response:
-        raise SystemExit(0 if 200 <= response.status < 500 else 1)
-except Exception:
-    raise SystemExit(1)
-PY
-      then
-        return 0
-      fi
-    fi
-    sleep .5
+    sleep .25
   done
   return 1
 }
 
-if verilume_is_running; then
-  echo "Verilume is already running at $APP_URL"
-  if command -v open >/dev/null 2>&1; then
-    open "$APP_URL"
+function stop_existing_verilume() {
+  local pids
+  pids="$(verilume_port_pids)"
+  if [[ -z "$pids" ]]; then
+    return 0
   fi
-  exit 0
+
+  echo "Stopping existing process on $APP_URL so this checkout is loaded..."
+  echo "$pids" | while read -r pid; do
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+
+  if ! wait_for_port_to_close; then
+    echo "Existing process did not stop cleanly; forcing shutdown..."
+    pids="$(verilume_port_pids)"
+    echo "$pids" | while read -r pid; do
+      if [[ -n "$pid" ]]; then
+        kill -9 "$pid" 2>/dev/null || true
+      fi
+    done
+    wait_for_port_to_close || true
+  fi
+}
+
+stop_existing_verilume
+
+python3 -m pip install --disable-pip-version-check --quiet -e .
+export PYTHONPATH="$APP_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+if command -v open >/dev/null 2>&1; then
+  (sleep 2 && open "$APP_URL") >/dev/null 2>&1 &
 fi
 
-python3 -m pip install --disable-pip-version-check -e .
 python3 launcher.py

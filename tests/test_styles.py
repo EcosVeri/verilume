@@ -11,6 +11,8 @@ class StyleThemeTests(unittest.TestCase):
 
         self.assertIn("--veri-bg: #0b0d10;", tokens["variables"])
         self.assertIn("rgba(255, 200, 87", tokens["app_gradient"])
+        self.assertIn("--veri-tooltip-bg: #14171d;", tokens["variables"])
+        self.assertIn("--veri-tooltip-text: #f5f2e8;", tokens["variables"])
 
     def test_light_theme_tokens_use_light_surfaces_and_dark_text(self) -> None:
         tokens = _theme_tokens("light")
@@ -42,10 +44,26 @@ class StyleThemeTests(unittest.TestCase):
         self.assertIn('[data-baseweb="tooltip"]', _BASE_CSS)
         self.assertIn('[data-testid="stTooltipContent"]', _BASE_CSS)
         self.assertIn('[data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"]', _BASE_CSS)
-        self.assertIn("color: var(--veri-tooltip-text) !important;", _BASE_CSS)
+        self.assertIn("color: var(--veri-tooltip-text, #f5f2e8) !important;", _BASE_CSS)
         self.assertIn("padding: .48rem .68rem !important;", _BASE_CSS)
         self.assertIn("margin: 0 !important;", _BASE_CSS)
-        self.assertIn("-webkit-text-fill-color: var(--veri-tooltip-text) !important;", _BASE_CSS)
+        self.assertIn('[role="tooltip"] > div', _BASE_CSS)
+        self.assertIn('[role="tooltip"] div', _BASE_CSS)
+        self.assertIn('[role="tooltip"]:empty', _BASE_CSS)
+        self.assertIn("display: none !important;", _BASE_CSS)
+        self.assertIn("-webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;", _BASE_CSS)
+
+    def test_sidebar_group_and_dataframe_overflow_styles_are_available(self) -> None:
+        self.assertIn(".veri-sidebar-group-title", _BASE_CSS)
+        self.assertIn(".veri-field-help", _BASE_CSS)
+        self.assertIn(".veri-field-help-dot", _BASE_CSS)
+        self.assertIn(".veri-field-help-bubble", _BASE_CSS)
+        self.assertIn(".veri-field-help-dot:hover + .veri-field-help-bubble", _BASE_CSS)
+        self.assertIn("background: var(--veri-tooltip-bg, #14171d);", _BASE_CSS)
+        self.assertIn("bottom: calc(100% + .38rem);", _BASE_CSS)
+        self.assertIn(".veri-benchmark-compare", _BASE_CSS)
+        self.assertIn("overflow-x: auto !important;", _BASE_CSS)
+        self.assertIn("overflow-y: auto !important;", _BASE_CSS)
 
     def test_secondary_buttons_force_readable_nested_text(self) -> None:
         self.assertIn('button[kind="secondary"][data-testid="baseButton-secondary"]', _BASE_CSS)

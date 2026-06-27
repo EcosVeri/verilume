@@ -127,11 +127,12 @@ SEARCH_MODE_CHOICES = (
     "Local + AI",
     "Local + AI + Web",
     "Web Only",
-    "Research Mode",
 )
 
 SEARCH_MODE_ALIASES = {
     "auto": "Auto",
+    "auto_(recommended)": "Auto",
+    "auto (recommended)": "Auto",
     "default": "Auto",
     "local": "Local Only",
     "local_only": "Local Only",
@@ -143,6 +144,8 @@ SEARCH_MODE_ALIASES = {
     "local + ai + web": "Local + AI + Web",
     "local_plus_ai_plus_web": "Local + AI + Web",
     "hybrid": "Local + AI + Web",
+    "hybrid_(local_+_ai_+_web)": "Local + AI + Web",
+    "hybrid (local + ai + web)": "Local + AI + Web",
     "ai": "AI Only",
     "ai_only": "AI Only",
     "ai only": "AI Only",

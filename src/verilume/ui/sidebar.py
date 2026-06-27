@@ -10,7 +10,6 @@ import streamlit as st
 
 from verilume.ingest import removable_documents, supported_extensions
 from verilume.settings import (
-    ANSWER_STYLE_CHOICES,
     DEFAULT_HF_MODEL_CHOICES,
     DEFAULT_OLLAMA_MODEL_CHOICES,
     GENERATION_BACKEND_LABELS,
@@ -29,6 +28,29 @@ class SidebarState:
     remove_documents: list[str]
     remove_clicked: bool
     reset_clicked: bool
+
+
+SEARCH_SOURCE_LABELS = {
+    "Auto": "Auto (Recommended)",
+    "Local Only": "Local",
+    "Local + AI": "Local + AI",
+    "Local + AI + Web": "Hybrid (Local + AI + Web)",
+    "Web Only": "Web",
+}
+
+SEARCH_SOURCE_TOOLTIPS = {
+    "Auto": "Searches local documents first, then intelligently combines AI knowledge and web evidence when appropriate.",
+    "Local Only": "Uses only indexed local documents.",
+    "Local + AI": "Searches local documents and uses AI knowledge, without web sources.",
+    "Local + AI + Web": "Searches local documents, AI knowledge, and web sources, then ranks and validates evidence.",
+    "Web Only": "Uses web sources only.",
+}
+
+ANSWER_MODE_OPTIONS = ("Standard", "Research")
+ANSWER_MODE_TOOLTIPS = {
+    "Standard": "Produces a concise answer with the strongest available evidence.",
+    "Research": "Produces a detailed research-style answer with broader evidence and citations.",
+}
 
 
 def render_sidebar(
@@ -81,31 +103,45 @@ def render_sidebar(
         search_expanded = _section_expanded("search", default=False)
 
         with st.expander("🔎 Search · Choose sources", expanded=search_expanded):
+            st.markdown(_sidebar_group_title("Search Sources"), unsafe_allow_html=True)
+            st.markdown(
+                _field_label_html("Search source", _search_source_help()),
+                unsafe_allow_html=True,
+            )
             search_mode = st.radio(
-                "Search mode",
+                "Search source",
                 options=list(SEARCH_MODE_CHOICES),
-                index=list(SEARCH_MODE_CHOICES).index(base_settings.search_mode)
-                if base_settings.search_mode in SEARCH_MODE_CHOICES
-                else 0,
+                index=list(SEARCH_MODE_CHOICES).index(_search_source_value(base_settings)),
+                format_func=_search_source_label,
+                label_visibility="collapsed",
             )
 
+            st.markdown(_sidebar_group_title("Answer Mode"), unsafe_allow_html=True)
+            st.markdown(
+                _field_label_html("Answer mode", _answer_mode_help()),
+                unsafe_allow_html=True,
+            )
+            answer_mode = st.radio(
+                "Answer mode",
+                options=list(ANSWER_MODE_OPTIONS),
+                index=list(ANSWER_MODE_OPTIONS).index(_answer_mode_value(base_settings)),
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+
+            st.markdown(_sidebar_group_title("Web Search"), unsafe_allow_html=True)
+            st.markdown(
+                _field_label_html(
+                    "Web search",
+                    "Allow web evidence when the selected source policy can use it.",
+                ),
+                unsafe_allow_html=True,
+            )
             enable_web_search = st.toggle(
                 "Web search",
                 value=base_settings.enable_web_search,
+                label_visibility="collapsed",
             )
-
-            show_benchmark_controls = st.checkbox(
-                "Show benchmark controls",
-                value=base_settings.benchmark_mode,
-                help="Developer comparison mode for retrieval and generation strategies.",
-            )
-            benchmark_mode = base_settings.benchmark_mode
-            if show_benchmark_controls:
-                benchmark_mode = st.toggle(
-                    "Benchmark mode",
-                    value=base_settings.benchmark_mode,
-                    help="Compare Full, Local Only, AI Only, and Web Only strategies.",
-                )
 
             provider_keys = list(WEB_SEARCH_PROVIDER_LABELS.keys())
             provider_labels = [WEB_SEARCH_PROVIDER_LABELS[key] for key in provider_keys]
@@ -124,8 +160,8 @@ def render_sidebar(
             selected_provider = provider_keys[provider_labels.index(selected_provider_label)]
 
             overrides["search_mode"] = search_mode
+            overrides["answer_style"] = answer_mode
             overrides["enable_web_search"] = enable_web_search
-            overrides["benchmark_mode"] = benchmark_mode
             overrides["web_search_provider"] = selected_provider
 
             overrides.update(_render_web_provider_settings(base_settings, selected_provider))
@@ -146,6 +182,24 @@ def render_sidebar(
 
             overrides["web_search_max_results"] = web_search_max_results
             overrides["web_search_timeout_seconds"] = float(web_search_timeout_seconds)
+
+            st.markdown(_sidebar_group_title("Benchmarking"), unsafe_allow_html=True)
+            st.markdown(
+                _field_label_html(
+                    "Benchmark",
+                    "Run a diagnostic comparison of Full, Local, AI, and Web answer strategies.",
+                ),
+                unsafe_allow_html=True,
+            )
+            benchmark_mode = st.toggle(
+                "Benchmark",
+                value=base_settings.benchmark_mode,
+                label_visibility="collapsed",
+            )
+            if benchmark_mode:
+                st.markdown(_benchmark_compare_html(), unsafe_allow_html=True)
+
+            overrides["benchmark_mode"] = benchmark_mode
 
         # -------------------------
         # Documents
@@ -194,10 +248,17 @@ def render_sidebar(
             _render_document_explorer(existing_documents)
             remove_documents_selected: list[str] = []
             if existing_documents:
+                st.markdown(
+                    _field_label_html(
+                        "Indexed documents",
+                        "Remove selected documents from the local files and vector database.",
+                    ),
+                    unsafe_allow_html=True,
+                )
                 remove_documents_selected = st.multiselect(
                     "Indexed documents",
                     options=existing_documents,
-                    help="Remove selected documents from the local files and vector database.",
+                    label_visibility="collapsed",
                 )
                 remove_clicked = st.button(
                     "Remove selected",
@@ -224,15 +285,6 @@ def render_sidebar(
         retrieval_expanded = _section_expanded("retrieval", default=False)
 
         with st.expander("⚙ Retrieval · Ranking", expanded=retrieval_expanded):
-            answer_style = st.radio(
-                "Answer style",
-                options=list(ANSWER_STYLE_CHOICES),
-                index=list(ANSWER_STYLE_CHOICES).index(base_settings.answer_style)
-                if base_settings.answer_style in ANSWER_STYLE_CHOICES
-                else 1,
-                horizontal=True,
-            )
-
             show_local_sources = st.toggle(
                 "Show local citations",
                 value=base_settings.show_local_sources,
@@ -258,7 +310,6 @@ def render_sidebar(
                 value=base_settings.enable_query_rewrite,
             )
 
-            overrides["answer_style"] = answer_style
             overrides["show_local_sources"] = show_local_sources
             overrides["retriever_k"] = retriever_k
             overrides["retrieval_score_threshold"] = retrieval_score_threshold
@@ -288,6 +339,63 @@ def _section_expanded(section: str, default: bool) -> bool:
         return True
 
     return default
+
+
+def _search_source_value(settings: AppSettings) -> str:
+    if settings.search_mode == "Research Mode":
+        return "Local + AI + Web"
+    if settings.search_mode in SEARCH_MODE_CHOICES:
+        return settings.search_mode
+    return "Auto"
+
+
+def _search_source_label(mode: str) -> str:
+    return SEARCH_SOURCE_LABELS.get(mode, mode)
+
+
+def _search_source_help() -> str:
+    return "\n".join(
+        f"{_search_source_label(mode)}: {SEARCH_SOURCE_TOOLTIPS[mode]}"
+        for mode in SEARCH_MODE_CHOICES
+    )
+
+
+def _answer_mode_value(settings: AppSettings) -> str:
+    if settings.search_mode == "Research Mode" or settings.answer_style == "Research":
+        return "Research"
+    return "Standard"
+
+
+def _answer_mode_help() -> str:
+    return "\n".join(
+        f"{mode}: {ANSWER_MODE_TOOLTIPS[mode]}"
+        for mode in ANSWER_MODE_OPTIONS
+    )
+
+
+def _sidebar_group_title(label: str) -> str:
+    return f'<div class="veri-sidebar-group-title">{escape(label)}</div>'
+
+
+def _field_label_html(label: str, help_text: str) -> str:
+    return (
+        '<div class="veri-field-help">'
+        f'<span class="veri-field-help-label">{escape(label)}</span>'
+        '<span class="veri-field-help-dot" tabindex="0" aria-label="Help">?</span>'
+        f'<span class="veri-field-help-bubble">{escape(help_text)}</span>'
+        "</div>"
+    )
+
+
+def _benchmark_compare_html() -> str:
+    labels = ("Full", "Local", "AI", "Web")
+    chips = "".join(f"<span>{label}</span>" for label in labels)
+    return (
+        '<div class="veri-benchmark-compare">'
+        "<strong>Compare</strong>"
+        f"<div>{chips}</div>"
+        "</div>"
+    )
 
 
 def _sidebar_status_html(stats: dict[str, int]) -> str:
@@ -355,10 +463,17 @@ def _render_huggingface_settings(base_settings: AppSettings) -> dict[str, Any]:
 
     active_model = custom_model.strip() or selected_model
 
+    st.markdown(
+        _field_label_html(
+            "HF provider",
+            "Use 'auto' unless you know the provider name.",
+        ),
+        unsafe_allow_html=True,
+    )
     hf_provider = st.text_input(
         "HF provider",
         value=base_settings.hf_provider,
-        help="Use 'auto' unless you know the provider name.",
+        label_visibility="collapsed",
     )
 
     hf_temperature = st.slider(

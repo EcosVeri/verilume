@@ -118,8 +118,8 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
                 "0 0 0 3px rgba(255, 200, 87, .16), "
                 "0 8px 30px rgba(0, 0, 0, .28)"
             ),
-            "veri-tooltip-bg": "#f8f9fb",
-            "veri-tooltip-text": "#101319",
+            "veri-tooltip-bg": "#14171d",
+            "veri-tooltip-text": "#f5f2e8",
             "veri-tooltip-border": "#ffc857",
         }
         gradient = "linear-gradient(180deg, rgba(255, 200, 87, 0.08) 0%, rgba(11, 13, 16, 0) 280px)"
@@ -177,18 +177,32 @@ html {
 
 [role="tooltip"],
 [data-baseweb="tooltip"] {
-  background: var(--veri-tooltip-bg) !important;
-  background-color: var(--veri-tooltip-bg) !important;
-  border: 1px solid var(--veri-tooltip-border) !important;
+  background: var(--veri-tooltip-bg, #14171d) !important;
+  background-color: var(--veri-tooltip-bg, #14171d) !important;
+  border: 1px solid var(--veri-tooltip-border, #ffc857) !important;
   border-radius: 8px !important;
   box-shadow: 0 16px 38px rgba(0, 0, 0, .28) !important;
-  color: var(--veri-tooltip-text) !important;
+  color: var(--veri-tooltip-text, #f5f2e8) !important;
   height: auto !important;
   line-height: 1.35 !important;
   max-width: min(28rem, calc(100vw - 2rem)) !important;
   min-height: 0 !important;
   overflow: visible !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text) !important;
+  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
+}
+
+[role="tooltip"]:empty,
+[data-baseweb="tooltip"]:empty,
+[data-testid="stTooltip"]:empty,
+[data-testid="stTooltipContent"]:empty,
+[data-testid="stMarkdownTooltip"]:empty {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  display: none !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 [data-testid="stTooltip"],
@@ -197,13 +211,21 @@ html {
   background: transparent !important;
   background-color: transparent !important;
   border: 0 !important;
-  color: var(--veri-tooltip-text) !important;
+  color: var(--veri-tooltip-text, #f5f2e8) !important;
   height: auto !important;
   line-height: 1.35 !important;
   min-height: 0 !important;
   overflow: visible !important;
   padding: .48rem .68rem !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text) !important;
+  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
+}
+
+[role="tooltip"] > div,
+[role="tooltip"] div,
+[data-baseweb="tooltip"] > div,
+[data-baseweb="tooltip"] div {
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
 [role="tooltip"] *,
@@ -211,8 +233,8 @@ html {
 [data-testid="stTooltip"] *,
 [data-testid="stTooltipContent"] *,
 [data-testid="stMarkdownTooltip"] * {
-  color: var(--veri-tooltip-text) !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text) !important;
+  color: var(--veri-tooltip-text, #f5f2e8) !important;
+  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
 }
 
 [role="tooltip"] p,
@@ -220,10 +242,10 @@ html {
 [data-testid="stTooltip"] p,
 [data-testid="stTooltipContent"] p,
 [data-testid="stMarkdownTooltip"] p {
-  color: var(--veri-tooltip-text) !important;
+  color: var(--veri-tooltip-text, #f5f2e8) !important;
   line-height: 1.35 !important;
   margin: 0 !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text) !important;
+  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
 }
 
 [role="tooltip"] [data-testid="stMarkdownContainer"],
@@ -231,16 +253,16 @@ html {
 [data-testid="stTooltip"] [data-testid="stMarkdownContainer"],
 [data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"],
 [data-testid="stMarkdownTooltip"] [data-testid="stMarkdownContainer"] {
-  color: var(--veri-tooltip-text) !important;
+  color: var(--veri-tooltip-text, #f5f2e8) !important;
   height: auto !important;
   line-height: 1.35 !important;
   margin: 0 !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text) !important;
+  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
 }
 
 [data-baseweb="tooltip"] [data-popper-arrow],
 [role="tooltip"] [data-popper-arrow] {
-  color: var(--veri-tooltip-bg) !important;
+  color: var(--veri-tooltip-bg, #14171d) !important;
 }
 
 .block-container {
@@ -428,6 +450,125 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
   margin: .16rem 0 .7rem 0;
 }
 
+.veri-sidebar-group-title {
+  color: var(--veri-amber);
+  font-size: .68rem;
+  font-weight: 820;
+  letter-spacing: .08rem;
+  line-height: 1.1;
+  margin: .82rem 0 .34rem 0;
+  text-transform: uppercase;
+}
+
+.veri-sidebar-group-title:first-child {
+  margin-top: .1rem;
+}
+
+.veri-field-help {
+  align-items: center;
+  display: inline-flex;
+  gap: .35rem;
+  line-height: 1.2;
+  margin: .1rem 0 .3rem 0;
+  position: relative;
+  z-index: 30;
+}
+
+.veri-field-help-label {
+  color: var(--veri-text);
+  font-size: .86rem;
+  font-weight: 760;
+}
+
+.veri-field-help-dot {
+  align-items: center;
+  border: 1px solid var(--veri-line);
+  border-radius: 999px;
+  color: var(--veri-muted);
+  cursor: help;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: .7rem;
+  font-weight: 820;
+  height: 1rem;
+  justify-content: center;
+  line-height: 1;
+  outline: none;
+  width: 1rem;
+  -webkit-text-fill-color: var(--veri-muted);
+}
+
+.veri-field-help-dot:hover,
+.veri-field-help-dot:focus {
+  border-color: var(--veri-tooltip-border, #ffc857);
+  color: var(--veri-tooltip-border, #ffc857);
+  -webkit-text-fill-color: var(--veri-tooltip-border, #ffc857);
+}
+
+.veri-field-help-bubble {
+  background: var(--veri-tooltip-bg, #14171d);
+  border: 1px solid var(--veri-tooltip-border, #ffc857);
+  border-radius: 8px;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, .28);
+  color: var(--veri-tooltip-text, #f5f2e8);
+  display: none;
+  font-size: .78rem;
+  font-weight: 650;
+  bottom: calc(100% + .38rem);
+  left: 0;
+  line-height: 1.35;
+  max-width: min(22rem, calc(100vw - 2rem));
+  min-width: min(18rem, calc(100vw - 2rem));
+  padding: .58rem .68rem;
+  position: absolute;
+  top: auto;
+  white-space: normal;
+  z-index: 9999;
+  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8);
+}
+
+.veri-field-help-dot:hover + .veri-field-help-bubble,
+.veri-field-help-dot:focus + .veri-field-help-bubble,
+.veri-field-help:focus-within .veri-field-help-bubble {
+  display: block;
+}
+
+.veri-benchmark-compare {
+  border: 1px solid var(--veri-line);
+  border-radius: 8px;
+  background: var(--veri-panel-2);
+  margin: .42rem 0 .25rem 0;
+  padding: .56rem .62rem;
+}
+
+.veri-benchmark-compare strong {
+  color: var(--veri-muted);
+  display: block;
+  font-size: .68rem;
+  font-weight: 820;
+  letter-spacing: .06rem;
+  line-height: 1.1;
+  margin-bottom: .42rem;
+  text-transform: uppercase;
+}
+
+.veri-benchmark-compare div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .34rem;
+}
+
+.veri-benchmark-compare span {
+  border: 1px solid var(--veri-line);
+  border-radius: 999px;
+  color: var(--veri-text);
+  display: inline-flex;
+  font-size: .72rem;
+  font-weight: 760;
+  line-height: 1;
+  padding: .28rem .48rem;
+}
+
 .veri-sidebar-status {
   display: grid;
   gap: .44rem;
@@ -479,7 +620,7 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
   border-radius: 8px;
   background: var(--veri-panel) !important;
   box-shadow: 0 10px 28px rgba(0, 0, 0, .08);
-  overflow: hidden;
+  overflow: visible;
   transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 
@@ -491,10 +632,12 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
 
 [data-testid="stSidebar"] [data-testid="stExpander"] details[open] > div {
   animation: veri-fade-up .22s ease both;
+  overflow: visible;
 }
 
 [data-testid="stSidebar"] [data-testid="stExpander"] details {
   background: transparent;
+  overflow: visible;
 }
 
 [data-testid="stSidebar"] [data-testid="stExpander"] summary {
@@ -1497,6 +1640,9 @@ div[data-baseweb="menu"] li:hover {
   background: var(--veri-panel) !important;
   border: 1px solid var(--veri-line) !important;
   color: var(--veri-text) !important;
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: auto !important;
 }
 
 [data-testid="stDataFrame"] *,

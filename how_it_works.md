@@ -23,7 +23,7 @@ The main files and their jobs are:
 | `src/verilume/settings.py` | Loads environment variables and local user settings from `~/.verilume/config.env`. |
 | `src/verilume/ingest.py` | Parses files, normalizes content, chunks text, embeds it, and builds the local Chroma knowledge base. |
 | `src/verilume/core/agentic_planner.py` | Produces explicit pipeline actions such as local search, model answer, web search, document summarization, table extraction, and calculation. |
-| `src/verilume/core/benchmark.py` | Compares Full, Local Only, AI Only, and Web Only answer strategies with latency, citation counts, confidence, and faithfulness diagnostics. |
+| `src/verilume/core/benchmark.py` | Compares Full, Local, AI, and Web answer strategies with latency, citation counts, confidence, and faithfulness diagnostics. |
 | `src/verilume/core/claim_extraction.py` | Extracts atomic factual claims from final answers for evidence comparison. |
 | `src/verilume/core/evidence_comparison.py` | Compares each claim against local, web, and AI evidence streams. |
 | `src/verilume/core/graphrag.py` | Expands entity/topic questions through the knowledge graph and produces graph-backed local source candidates. |
@@ -73,7 +73,7 @@ Verilume defaults to dark mode. The header includes a visible appearance toggle:
 
 The CSS is still one stylesheet. `src/verilume/ui/styles.py` injects palette variables for the selected mode, and controls such as select boxes, multiselects, buttons, chat input, metrics, expanders, source tables, and evidence cards read from those variables so text remains readable in both modes.
 
-Streamlit help popovers and BaseWeb tooltips are styled globally with `--veri-tooltip-*` variables. This keeps every `help=` tooltip readable in both dark and light appearances, including sidebar controls such as benchmark toggles, provider settings, document removal, model provider hints, dashboard buttons, and future controls that use Streamlit help text.
+Streamlit help popovers and BaseWeb tooltips are styled globally with `--veri-tooltip-*` variables. Dark mode uses a dark tooltip surface and light text; light mode uses a light tooltip surface and dark text. This keeps every `help=` tooltip readable, including sidebar controls such as search-source descriptions, answer mode, benchmarking, provider settings, document removal, model provider hints, dashboard buttons, and future controls that use Streamlit help text.
 
 ## 5. How Ingestion Works
 
@@ -246,31 +246,38 @@ These are answered strictly from local indexed files. AI knowledge and web searc
 
 If the user names a specific local filename such as `slides-smoke.pptx` or `scanned-smoke.pdf`, that filename is now preserved as an anchor during local ranking and filtering. This matters for short OCR chunks, where the document name may be the strongest signal.
 
-### 5.8 Search modes
+### 5.8 Search source and answer mode
 
-The sidebar now exposes a `Search mode` control for users who want more control than Auto routing.
+The sidebar separates where evidence comes from and how the answer is written.
 
-The modes are:
+The `Search source` control has these user-facing choices:
 
 | Mode | Behavior |
 | --- | --- |
-| `Auto` | Default local-first routing. Local is searched first, AI knowledge is used for stable support, and web is used when enabled, requested, or needed by the evidence policy. |
-| `Local Only` | Searches indexed local files and blocks model knowledge and web search for that turn. |
+| `Auto (Recommended)` | Default local-first routing. Local is searched first, AI knowledge is used for stable support, and web is used when enabled, requested, or needed by the evidence policy. |
+| `Local` | Searches indexed local files and blocks model knowledge and web search for that turn. |
 | `Local + AI` | Searches local files and allows AI knowledge, but blocks web search. |
-| `Local + AI + Web` | Forces the full hybrid local/model/web path when web search is configured. |
-| `Web Only` | Skips local and model evidence and answers from web evidence only when web search is configured. |
-| `Research Mode` | Uses the full hybrid path and is intended for source-heavy answers and broader evidence collection. |
+| `Hybrid (Local + AI + Web)` | Forces the full hybrid local/model/web path when web search is configured. |
+| `Web` | Skips local and model evidence and answers from web evidence only when web search is configured. |
 
 Auto remains the default because it preserves the local-first safety model. The explicit modes are user controls; they should not be used by the classifier as hidden defaults.
 
+The `Answer mode` control has two choices:
+
+| Mode | Behavior |
+| --- | --- |
+| `Standard` | Produces a concise answer with the strongest available evidence. |
+| `Research` | Produces a detailed research-style answer with broader evidence and citations. |
+
 Search mode enforcement is centralized in `SearchPolicy`. The query interpreter can suggest intent and useful search queries, but it cannot override the selected search mode:
 
-- `Local Only` searches local evidence only.
+- `Local` searches local evidence only.
 - `Local + AI` searches local evidence and asks model knowledge, but never searches web.
-- `Local + AI + Web` searches exactly local, AI, and web when web is configured; AI is demoted for current/dynamic facts.
-- `Web Only` searches web only and blocks local/model factual evidence.
-- `Research Mode` searches local, AI, and web with the same current/dynamic AI demotion.
+- `Hybrid` searches exactly local, AI, and web when web is configured; AI is demoted for current/dynamic facts.
+- `Web` searches web only and blocks local/model factual evidence.
 - `Auto` searches local first, combines AI for stable questions, and uses web when enabled or needed.
+
+Legacy saved values such as `Local Only`, `Local + AI + Web`, `Web Only`, and `Research Mode` still normalize correctly. In the current sidebar, `Research Mode` is represented as `Answer mode = Research` rather than as a search source.
 
 ### 5.9 Semantic answer cache
 
@@ -393,18 +400,18 @@ The multimodal retriever searches captions, OCR text, formula text, document nam
 
 If no visual/OCR evidence exists, the system should say that instead of guessing.
 
-### 5.14 Benchmark Mode
+### 5.14 Benchmarking
 
-Benchmark Mode is an opt-in diagnostic switch in the sidebar. It is off by default.
+Benchmarking is an opt-in diagnostic switch in the sidebar. It is off by default and uses one visible `Benchmark` toggle.
 
 When enabled, a user question is run through four isolated strategies:
 
 | Benchmark strategy | Behavior |
 | --- | --- |
 | `full` | Uses the normal Verilume evidence policy and the selected search mode, with benchmark and semantic caches disabled for the run. |
-| `local_only` | Searches indexed local files only and blocks model/web evidence. |
+| `local_only` | Searches indexed local files only and blocks model/web evidence. Displayed as `Local`. |
 | `ai_only` | Skips local and web evidence and asks the configured model for a model-knowledge answer. |
-| `web_only` | Skips local and model evidence and uses the configured web provider when available. |
+| `web_only` | Skips local and model evidence and uses the configured web provider when available. Displayed as `Web`. |
 
 Each strategy records:
 
@@ -417,9 +424,9 @@ Each strategy records:
 - answer-verification or faithfulness score when available
 - diagnostics from the underlying RAG pass
 
-The benchmark report picks a best diagnostic mode using confidence, source count, faithfulness, and latency. The normal Verilume answer remains the main answer. The UI then shows a `Benchmark Results` table and collapsed per-mode answers below the normal answer so the user can compare behavior without losing the answer-first experience.
+The benchmark report picks a best diagnostic mode using confidence, source count, faithfulness, and latency. The normal Verilume answer remains the main answer. The UI then shows a responsive `Benchmark Results` table and collapsed per-mode answers below the normal answer so the user can compare behavior without losing the answer-first experience.
 
-Benchmark Mode is not meant to replace Auto routing. It is a research and debugging tool for checking whether local, model, web, or full hybrid evidence is producing the strongest answer for a given question.
+Benchmarking is not meant to replace Auto routing. It is a research and debugging tool for checking whether local, model, web, or full hybrid evidence is producing the strongest answer for a given question.
 
 Each benchmark mode is wrapped independently. If one strategy fails, the benchmark table records that failure and the app still returns the normal answer.
 
@@ -626,7 +633,7 @@ The source-strength bars are derived from the evidence streams that survived fin
 - Web strength uses the best web source score or domain/source confidence fallback.
 - AI strength is shown only when model knowledge actually contributed.
 
-The chat input is styled as a compact command bar. Its placeholder shows the active search mode, such as `🌐 Auto`, `📄 Local Only`, or `🌍 Web Only`, followed by a rotating example prompt for that session. The command bar uses one continuous pill surface: dark in dark mode and white in light mode. It keeps a subtle neutral outline by default, switches to amber on hover or focus, and uses a soft amber glow instead of the stronger coral accent so the conversation content remains visually dominant.
+The chat input is styled as a compact command bar. Its placeholder shows the active search source, such as `🌐 Auto`, `📄 Local`, or `🌍 Web`, followed by a rotating example prompt for that session. The command bar uses one continuous pill surface: dark in dark mode and white in light mode. It keeps a subtle neutral outline by default, switches to amber on hover or focus, and uses a soft amber glow instead of the stronger coral accent so the conversation content remains visually dominant.
 
 Typical source labels are:
 
@@ -659,7 +666,7 @@ The practical answer policy is:
 9. If web search is disabled and local evidence is missing, AI knowledge can answer stable questions by itself.
 10. The final answer is selected by ranking the surviving local, model, and web evidence streams rather than blindly trusting whichever stream ran last.
 11. Never allow unsupported citations or obviously wrong same-name identity pages to decide the answer.
-12. Benchmark Mode is diagnostic only; it never replaces the normal answer.
+12. Benchmarking is diagnostic only; it never replaces the normal answer.
 13. Search mode is the final source-use authority.
 
 ## 11. Roadmap From Current Suggestions
@@ -671,7 +678,7 @@ Several suggested improvements are now partially implemented and documented, whi
 | Answer before metadata | Implemented. The answer now appears before the Evidence Summary. |
 | Search modes | Implemented in settings, sidebar, and RAG routing. |
 | Source confidence bars | Implemented in the Evidence Summary for Local, Web, and AI streams. |
-| Benchmark mode | Implemented as an opt-in sidebar diagnostic that compares Full, Local Only, AI Only, and Web Only answer strategies. |
+| Benchmark mode | Implemented as one opt-in sidebar toggle that compares Full, Local, AI, and Web answer strategies. |
 | Strict search policy | Implemented through `SearchMode` and `SearchPolicy`; the interpreter cannot override the selected mode. |
 | Equation repair | Implemented conservatively for math-looking local text before chunking. |
 | Progressive generation stages | Partially implemented through the Streamlit evidence-collection status log. More granular streaming token output is still future work. |

@@ -77,7 +77,7 @@ class ChatInteractionTests(unittest.TestCase):
         ):
             placeholder = _chat_placeholder(AppSettings(search_mode="Local Only"))
 
-        self.assertEqual(placeholder, "📄 Local Only  Search local files...")
+        self.assertEqual(placeholder, "📄 Local  Search local files...")
 
     def test_pending_prompt_is_consumed_once(self) -> None:
         session_state = {"pending_prompt": "  List indexed documents  "}

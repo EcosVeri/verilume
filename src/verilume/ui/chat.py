@@ -54,6 +54,20 @@ SEARCH_MODE_PLACEHOLDER_ICONS = {
     "Web Only": "🌍",
     "Research Mode": "🔎",
 }
+SEARCH_MODE_DISPLAY_LABELS = {
+    "Auto": "Auto",
+    "Local Only": "Local",
+    "Local + AI": "Local + AI",
+    "Local + AI + Web": "Hybrid",
+    "Web Only": "Web",
+    "Research Mode": "Research",
+    "local_only": "Local",
+    "local_ai": "Local + AI",
+    "local_ai_web": "Hybrid",
+    "web_only": "Web",
+    "research": "Research",
+    "auto": "Auto",
+}
 
 
 def init_chat_state() -> None:
@@ -113,11 +127,12 @@ def _handle_prompt(settings: AppSettings, prompt: str) -> None:
 def _chat_placeholder(settings: AppSettings) -> str:
     mode = str(getattr(settings, "search_mode", "Auto") or "Auto")
     icon = SEARCH_MODE_PLACEHOLDER_ICONS.get(mode, "🌐")
+    label = _search_mode_display_label(mode)
     example = str(
         st.session_state.get("chat_placeholder_example")
         or random.choice(CHAT_PLACEHOLDER_EXAMPLES)
     )
-    return f"{icon} {mode}  {example}"
+    return f"{icon} {label}  {example}"
 
 
 def _consume_pending_prompt() -> str | None:
@@ -493,8 +508,18 @@ def _supporting_source_count_label(source_count: int) -> str:
 def _summary_search_mode(diagnostics: dict[str, Any]) -> str:
     policy = diagnostics.get("search_policy") or {}
     if isinstance(policy, dict) and policy.get("mode"):
-        return _friendly_token(str(policy.get("mode")))
-    return _friendly_token(str(diagnostics.get("search_mode_key") or diagnostics.get("search_mode") or ""))
+        return _search_mode_display_label(str(policy.get("mode")))
+    return _search_mode_display_label(
+        str(diagnostics.get("search_mode_key") or diagnostics.get("search_mode") or "")
+    )
+
+
+def _search_mode_display_label(mode: str) -> str:
+    text = str(mode or "Auto").strip()
+    if text in SEARCH_MODE_DISPLAY_LABELS:
+        return SEARCH_MODE_DISPLAY_LABELS[text]
+    key = text.lower().replace("-", "_").replace(" ", "_")
+    return SEARCH_MODE_DISPLAY_LABELS.get(key, _friendly_token(text))
 
 
 def _summary_source_list(value: Any) -> str:
@@ -568,7 +593,7 @@ def _render_benchmark_report(response: RAGResponse) -> None:
         faithfulness = result.get("faithfulness_score")
         rows.append(
             {
-                "Mode": str(result.get("mode") or "").replace("_", " ").title(),
+                "Mode": _benchmark_display_label(str(result.get("mode") or "")),
                 "Confidence": result.get("confidence") or "",
                 "Sources": int(result.get("source_count") or 0),
                 "Local": int(result.get("local_source_count") or 0),
@@ -585,14 +610,22 @@ def _render_benchmark_report(response: RAGResponse) -> None:
         return
 
     with st.expander("Benchmark Results", expanded=True):
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-        best_label = str(report.get("best_mode_label") or report.get("best_mode") or "").strip()
+        table_height = min(260, 44 + (len(rows) + 1) * 36)
+        st.dataframe(
+            rows,
+            use_container_width=True,
+            hide_index=True,
+            height=table_height,
+        )
+        best_label = _benchmark_display_label(
+            str(report.get("best_mode_label") or report.get("best_mode") or "")
+        )
         if best_label:
             st.caption(f"Best mode: {best_label}")
         for result in report.get("results", []):
             if not isinstance(result, dict):
                 continue
-            mode = str(result.get("mode") or "").replace("_", " ").title()
+            mode = _benchmark_display_label(str(result.get("mode") or ""))
             answer = str(result.get("answer") or "").strip()
             with st.expander(f"{mode} answer", expanded=False):
                 st.markdown(answer or "_No answer returned._")
@@ -603,13 +636,30 @@ def _render_benchmark_report_inline(response: RAGResponse) -> None:
     if not report:
         return
     results = report.get("results") or []
-    best_label = str(report.get("best_mode_label") or report.get("best_mode") or "").strip()
+    best_label = _benchmark_display_label(
+        str(report.get("best_mode_label") or report.get("best_mode") or "")
+    )
     st.caption(f"Benchmark Results — {len(results)} modes compared; best: {best_label or 'N/A'}")
 
 
 def _benchmark_report(response: RAGResponse) -> dict[str, Any]:
     report = (response.diagnostics or {}).get("benchmark_report") or {}
     return report if isinstance(report, dict) else {}
+
+
+def _benchmark_display_label(mode: str) -> str:
+    labels = {
+        "full": "Full",
+        "Full": "Full",
+        "local_only": "Local",
+        "Local Only": "Local",
+        "ai_only": "AI",
+        "AI Only": "AI",
+        "web_only": "Web",
+        "Web Only": "Web",
+    }
+    text = str(mode or "").strip()
+    return labels.get(text, text.replace("_", " ").title())
 
 
 def _render_evidence_comparison_inline(response: RAGResponse) -> None:

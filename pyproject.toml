@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "verilume"
-version = "1.0.0"
+version = "0.1.0"
 description = "Privacy-first desktop AI assistant for documents, research, evidence verification, and hybrid local + web search."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [
   { name = "Damian Mingo Ndiwago" }
 ]
@@ -41,7 +41,7 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: End Users/Desktop",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
   "Operating System :: MacOS",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
@@ -103,7 +103,6 @@ include = [
   "/.env.example",
   "/.github",
   "/.streamlit",
-  "/CITATION.cff",
   "/CHANGELOG.md",
   "/CODE_OF_CONDUCT.md",
   "/CONTRIBUTING.md",
@@ -118,7 +117,6 @@ include = [
   "/scripts",
   "/src",
   "/tests",
-  "/vision.md",
 ]
 
 [tool.ruff]

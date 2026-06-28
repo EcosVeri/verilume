@@ -12,8 +12,8 @@
 
 [![CI](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
-![MIT License](https://img.shields.io/badge/license-MIT-green)
-![macOS](https://img.shields.io/badge/macOS-ready-black)
+![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-green)
+![macOS](https://img.shields.io/badge/macOS-planned-black)
 ![Windows Soon](https://img.shields.io/badge/Windows-soon-lightgrey)
 ![PyPI Soon](https://img.shields.io/badge/PyPI-soon-blue)
 ![Active Development](https://img.shields.io/badge/status-active%20development-f59e0b)
@@ -24,7 +24,7 @@ Verilume combines local semantic search, AI reasoning, evidence verification, op
 
 | Platform | Status |
 | --- | --- |
-| macOS | [Download the latest release](https://github.com/DamingoNdiwa/verilume/releases/latest) |
+| macOS | EcosVeri release planned for July 3, 2026 |
 | Windows | Coming Soon |
 | Linux | Coming Soon |
 | PyPI | Coming Soon |
@@ -56,9 +56,9 @@ Everything is designed around privacy, transparency and reproducible answers.
     <td><strong>Hybrid Search</strong><br>Local documents plus optional web search.</td>
   </tr>
   <tr>
-    <td><strong>Desktop Ready</strong><br>Streamlit app with a macOS launcher and release assets.</td>
+    <td><strong>Desktop Ready</strong><br>Streamlit app with a macOS launcher and planned release assets.</td>
     <td><strong>Multiple Models</strong><br>Hugging Face today. Ollama-ready local workflows.</td>
-    <td><strong>Open Source</strong><br>MIT licensed and built in public.</td>
+    <td><strong>Open Source</strong><br>Apache-2.0 licensed and built in public.</td>
   </tr>
 </table>
 
@@ -146,7 +146,7 @@ Web citations use `[W1]`, `[W2]`, `[W3]` and are shown separately as clickable s
 
 ### Desktop
 
-Download the latest macOS release from [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases/latest).
+The macOS desktop release is planned for July 3, 2026 under EcosVeri.
 
 On macOS, you can also double-click the source launcher:
 
@@ -231,4 +231,4 @@ Website: ecosveri.dev (Coming Soon).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).

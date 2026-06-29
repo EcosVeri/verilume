@@ -18,6 +18,7 @@ from verilume.ui.chat import (
     _group_web_source_rows,
     _history_bucket,
     _partition_message_history,
+    _render_benchmark_report,
     _render_message_history,
     _render_sources,
     _recommendation_for_response,
@@ -527,3 +528,59 @@ class ChatInteractionTests(unittest.TestCase):
             _render_sources(response, AppSettings(), display="inline")
 
         self.assertEqual(container.call_count, 2)
+
+    def test_benchmark_report_renders_answers_without_nested_expanders(self) -> None:
+        response = RAGResponse(
+            answer="Benchmark answer",
+            local_sources=[],
+            web_sources=[],
+            used_web=False,
+            confidence="medium",
+            diagnostics={
+                "benchmark_report": {
+                    "best_mode": "full",
+                    "best_mode_label": "full",
+                    "results": [
+                        {
+                            "mode": "full",
+                            "answer": "Full answer [S1]",
+                            "confidence": "high",
+                            "source_count": 1,
+                            "local_source_count": 1,
+                            "web_source_count": 0,
+                            "latency_seconds": 0.5,
+                            "faithfulness_score": 0.8,
+                        }
+                    ],
+                }
+            },
+        )
+        expander_depth = 0
+
+        class GuardedExpander:
+            def __enter__(self) -> "GuardedExpander":
+                nonlocal expander_depth
+                expander_depth += 1
+                return self
+
+            def __exit__(self, exc_type, exc, traceback) -> bool:
+                nonlocal expander_depth
+                expander_depth -= 1
+                return False
+
+        def guarded_expander(*_args, **_kwargs) -> GuardedExpander:
+            if expander_depth:
+                raise AssertionError("nested expander")
+            return GuardedExpander()
+
+        with (
+            patch("verilume.ui.chat.st.expander", side_effect=guarded_expander) as expander,
+            patch("verilume.ui.chat.st.dataframe"),
+            patch("verilume.ui.chat.st.caption"),
+            patch("verilume.ui.chat.st.markdown") as markdown,
+        ):
+            _render_benchmark_report(response)
+
+        self.assertEqual(expander.call_count, 1)
+        markdown.assert_any_call("**Full answer**")
+        markdown.assert_any_call("Full answer [S1]")

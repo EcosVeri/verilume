@@ -627,8 +627,8 @@ def _render_benchmark_report(response: RAGResponse) -> None:
                 continue
             mode = _benchmark_display_label(str(result.get("mode") or ""))
             answer = str(result.get("answer") or "").strip()
-            with st.expander(f"{mode} answer", expanded=False):
-                st.markdown(answer or "_No answer returned._")
+            st.markdown(f"**{mode} answer**")
+            st.markdown(answer or "_No answer returned._")
 
 
 def _render_benchmark_report_inline(response: RAGResponse) -> None:

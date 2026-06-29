@@ -151,30 +151,33 @@ def remove_documents(settings: AppSettings, documents: list[str]) -> list[str]:
         ingestor = DocumentIngestor(settings)
         removed: list[str] = []
 
-        for document in documents:
-            relative = Path(document)
-            raw_path = docs_dir / relative
-            path = raw_path.resolve()
-            if docs_root not in path.parents and path != docs_root:
-                continue
+        try:
+            for document in documents:
+                relative = Path(document)
+                raw_path = docs_dir / relative
+                path = raw_path.resolve()
+                if docs_root not in path.parents and path != docs_root:
+                    continue
 
-            manifest.pop(str(raw_path), None)
-            manifest.pop(str(path), None)
-            ingestor.retriever.delete_document(str(raw_path))
-            specialized_delete = getattr(ingestor, "_delete_specialized_document", None)
-            if callable(specialized_delete):
-                specialized_delete(path.name)
-            if path != raw_path:
-                ingestor.retriever.delete_document(str(path))
-            try:
-                if path.exists():
-                    path.unlink()
-                removed.append(str(relative))
-            except OSError:
-                continue
+                manifest.pop(str(raw_path), None)
+                manifest.pop(str(path), None)
+                ingestor.retriever.delete_document(str(raw_path))
+                specialized_delete = getattr(ingestor, "_delete_specialized_document", None)
+                if callable(specialized_delete):
+                    specialized_delete(path.name)
+                if path != raw_path:
+                    ingestor.retriever.delete_document(str(path))
+                try:
+                    if path.exists():
+                        path.unlink()
+                    removed.append(str(relative))
+                except OSError:
+                    continue
 
-        write_manifest(settings.manifest_path, manifest)
-        return removed
+            write_manifest(settings.manifest_path, manifest)
+            return removed
+        finally:
+            ingestor.retriever.close(clear_system_cache=True)
 
 
 def supported_files(docs_dir: Path) -> list[Path]:
@@ -1039,7 +1042,7 @@ class DocumentIngestor:
             if result.errors:
                 preview = "; ".join(result.errors[:3])
                 raise IngestStateError(f"Staged ingestion failed: {preview}")
-            staged.retriever.close()
+            staged.retriever.close(clear_system_cache=True)
             self._install_staged_snapshot(
                 staged_chroma=staged_chroma,
                 staged_manifest=staged_manifest,
@@ -1182,6 +1185,7 @@ class DocumentIngestor:
         return indexed
 
     def _reset(self) -> None:
+        self.retriever.close(clear_system_cache=True)
         if self.settings.manifest_path.exists():
             self.settings.manifest_path.unlink()
         if self.settings.chroma_dir.exists():
@@ -1247,7 +1251,7 @@ class DocumentIngestor:
         ocr_store_backup = Path(str(backup["ocr_block_store_path"]))
         structured_store_backup = Path(str(backup["structured_document_store_path"]))
 
-        self.retriever.close()
+        self.retriever.close(clear_system_cache=True)
         if self.settings.chroma_dir.exists():
             _make_tree_writable(self.settings.chroma_dir)
             shutil.rmtree(self.settings.chroma_dir, ignore_errors=True)
@@ -1277,7 +1281,7 @@ class DocumentIngestor:
         staged_ocr_store: Path,
         staged_structured_store: Path,
     ) -> None:
-        self.retriever.close()
+        self.retriever.close(clear_system_cache=True)
         if self.settings.chroma_dir.exists():
             _make_tree_writable(self.settings.chroma_dir)
             shutil.rmtree(self.settings.chroma_dir, ignore_errors=True)
@@ -1285,6 +1289,7 @@ class DocumentIngestor:
             shutil.copytree(staged_chroma, self.settings.chroma_dir, dirs_exist_ok=True)
         else:
             self.settings.chroma_dir.mkdir(parents=True, exist_ok=True)
+        _make_tree_writable(self.settings.chroma_dir)
 
         if staged_manifest.exists():
             self.settings.manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1303,6 +1308,9 @@ class DocumentIngestor:
         shutil.rmtree(Path(str(backup["root"])), ignore_errors=True)
 
     def _rollback_reason(self, result: IngestResult, backup: dict[str, object]) -> str | None:
+        if result.chunks_indexed > 0:
+            self.retriever.close(clear_system_cache=True)
+            self.retriever = self._create_retriever()
         current_count = self.retriever.count()
         previous_count = int(backup.get("previous_count", 0) or 0)
         if result.chunks_indexed > 0 and current_count == 0:

@@ -9,6 +9,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from verilume.core.schemas import DocumentChunk
+from verilume.core.schemas import IngestResult
 from verilume.ingest import (
     DocumentIngestor,
     _adaptive_embedding_batch_size,
@@ -30,9 +31,13 @@ from verilume.settings import AppSettings
 class FakeRetriever:
     def __init__(self) -> None:
         self.deleted_paths: list[str] = []
+        self.close_clear_system_cache_values: list[bool] = []
 
     def delete_document(self, source_path: str) -> None:
         self.deleted_paths.append(source_path)
+
+    def close(self, *, clear_system_cache: bool = False) -> None:
+        self.close_clear_system_cache_values.append(clear_system_cache)
 
 
 class FakeRemovalIngestor:
@@ -41,6 +46,18 @@ class FakeRemovalIngestor:
     def __init__(self, settings: AppSettings) -> None:
         self.retriever = FakeRetriever()
         FakeRemovalIngestor.last_retriever = self.retriever
+
+
+class FakeCountRetriever:
+    def __init__(self, count: int) -> None:
+        self._count = count
+        self.close_clear_system_cache_values: list[bool] = []
+
+    def count(self) -> int:
+        return self._count
+
+    def close(self, *, clear_system_cache: bool = False) -> None:
+        self.close_clear_system_cache_values.append(clear_system_cache)
 
 
 def _chunk(text: str) -> DocumentChunk:
@@ -219,6 +236,28 @@ class IngestCleanupTests(unittest.TestCase):
             self.assertEqual(list(manifest), [str(existing_path)])
             self.assertEqual(ingestor.retriever.deleted_paths, [str(missing_path)])
 
+    def test_rollback_reason_reopens_retriever_after_staged_install(self) -> None:
+        ingestor = object.__new__(DocumentIngestor)
+        stale_retriever = FakeCountRetriever(0)
+        fresh_retriever = FakeCountRetriever(12)
+        ingestor.retriever = stale_retriever
+        ingestor._create_retriever = lambda: fresh_retriever
+
+        reason = ingestor._rollback_reason(
+            IngestResult(
+                files_seen=1,
+                files_indexed=1,
+                files_skipped=0,
+                chunks_indexed=12,
+                pdf_pages=1,
+            ),
+            {"previous_count": 0},
+        )
+
+        self.assertIsNone(reason)
+        self.assertIs(ingestor.retriever, fresh_retriever)
+        self.assertEqual(stale_retriever.close_clear_system_cache_values, [True])
+
     def test_removable_documents_and_remove_documents_stay_in_sync(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -259,6 +298,10 @@ class IngestCleanupTests(unittest.TestCase):
             self.assertEqual(
                 FakeRemovalIngestor.last_retriever.deleted_paths,
                 expected_deleted_paths,
+            )
+            self.assertEqual(
+                FakeRemovalIngestor.last_retriever.close_clear_system_cache_values,
+                [True],
             )
 
     def test_image_files_are_ocrd_through_image_handler(self) -> None:

@@ -94,10 +94,12 @@ class PromptSuggestionTests(unittest.TestCase):
         presentation = _document("strategy.pptx", "Company Strategy 2026", "document")
         certificate = _document("certificate.pdf", "Course Completion", "certificate")
 
-        presentation_titles = [
-            item.title
-            for item in generate_suggested_prompts([presentation], [], AppSettings())
-        ]
+        presentation_suggestions = generate_suggested_prompts(
+            [presentation],
+            [],
+            AppSettings(),
+        )
+        presentation_titles = [item.title for item in presentation_suggestions]
         certificate_titles = [
             item.title
             for item in generate_suggested_prompts([certificate], [], AppSettings())
@@ -105,6 +107,13 @@ class PromptSuggestionTests(unittest.TestCase):
 
         self.assertEqual(classify_document_type(presentation), "presentation")
         self.assertIn("Create speaker notes", presentation_titles)
+        self.assertTrue(
+            any(
+                item.title == "Create speaker notes"
+                and item.prompt == "Create speaker notes from Company Strategy 2026"
+                for item in presentation_suggestions
+            )
+        )
         self.assertIn("Extract important fields", certificate_titles)
 
     def test_large_library_prefers_collection_prompts(self) -> None:

@@ -22,14 +22,21 @@ class FakeCachedService:
 class FakeRetriever:
     def __init__(self) -> None:
         self.close_calls = 0
+        self.clear_system_cache_values: list[bool] = []
 
-    def close(self) -> None:
+    def close(self, *, clear_system_cache: bool = False) -> None:
         self.close_calls += 1
+        self.clear_system_cache_values.append(clear_system_cache)
 
 
 class FakeRAGService:
     def __init__(self) -> None:
         self.retriever = FakeRetriever()
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.retriever.close(clear_system_cache=True)
 
 
 class AppCacheTests(unittest.TestCase):
@@ -55,10 +62,13 @@ class AppCacheTests(unittest.TestCase):
         service = FakeRAGService()
         settings = AppSettings()
 
-        with patch("verilume.app.get_rag_service", return_value=service):
+        with patch("verilume.app.get_rag_service", return_value=service) as cached_service:
             _release_rag_retriever(settings)
 
+        self.assertEqual(service.close_calls, 1)
         self.assertEqual(service.retriever.close_calls, 1)
+        self.assertEqual(service.retriever.clear_system_cache_values, [True])
+        cached_service.cache_clear.assert_called_once_with()
 
 
 if __name__ == "__main__":

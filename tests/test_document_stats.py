@@ -20,6 +20,7 @@ class FakeClient:
     def __init__(self, path: str) -> None:
         self.path = path
         self.closed = False
+        self.cache_cleared = False
         FakeClient.instances.append(self)
 
     def get_or_create_collection(self, name: str, metadata: dict[str, str]) -> FakeCollection:
@@ -27,6 +28,9 @@ class FakeClient:
 
     def close(self) -> None:
         self.closed = True
+
+    def clear_system_cache(self) -> None:
+        self.cache_cleared = True
 
 
 class DocumentStatsTests(unittest.TestCase):
@@ -45,6 +49,7 @@ class DocumentStatsTests(unittest.TestCase):
         self.assertEqual(count, 7)
         self.assertEqual(len(FakeClient.instances), 1)
         self.assertTrue(FakeClient.instances[0].closed)
+        self.assertTrue(FakeClient.instances[0].cache_cleared)
 
 
 if __name__ == "__main__":

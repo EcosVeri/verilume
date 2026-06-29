@@ -78,7 +78,7 @@ class ChromaRetriever:
         self._collection = None
         self._client = None
 
-    def close(self) -> None:
+    def close(self, *, clear_system_cache: bool = False) -> None:
         client = self._client
         self._collection = None
         self._client = None
@@ -88,6 +88,13 @@ class ChromaRetriever:
             client.close()
         except Exception:
             pass
+        if clear_system_cache:
+            try:
+                clear_cache = getattr(client, "clear_system_cache", None)
+                if callable(clear_cache):
+                    clear_cache()
+            except Exception:
+                pass
 
     def reset(self) -> None:
         self.invalidate_caches(drop_disk=True)

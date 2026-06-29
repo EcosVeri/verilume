@@ -281,10 +281,10 @@ def _type_templates(document_type: str) -> tuple[tuple[str, str, str, float], ..
             ("List formulas", "List formulas in {subject}", "formula", 0.72),
         ),
         "presentation": (
-            ("Summarise the presentation", "Summarise the presentation", "summary", 0.89),
-            ("Extract presentation topics", "Extract presentation topics", "analysis", 0.88),
-            ("Create speaker notes", "Create speaker notes", "writing", 0.9),
-            ("Extract key points", "Extract key points from the presentation", "analysis", 0.78),
+            ("Summarise {subject}", "Summarise {subject}", "summary", 0.89),
+            ("Extract presentation topics", "Extract presentation topics from {subject}", "analysis", 0.88),
+            ("Create speaker notes", "Create speaker notes from {subject}", "writing", 0.9),
+            ("Extract key points", "Extract key points from {subject}", "analysis", 0.78),
         ),
         "report": (
             ("Summarise {subject}", "Summarise {subject}", "summary", 0.87),

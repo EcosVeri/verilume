@@ -181,15 +181,29 @@ def _release_rag_retriever(settings: AppSettings) -> None:
     try:
         service = get_rag_service(settings)
     except Exception:
+        get_rag_service.cache_clear()
         return
 
-    retriever = getattr(service, "retriever", None)
-    close = getattr(retriever, "close", None)
+    close = getattr(service, "close", None)
     if callable(close):
         try:
             close()
         except Exception:
-            LOGGER.debug("Failed to close cached retriever before local store mutation.", exc_info=True)
+            LOGGER.debug("Failed to close cached RAG service before local store mutation.", exc_info=True)
+    else:
+        retriever = getattr(service, "retriever", None)
+        close_retriever = getattr(retriever, "close", None)
+        if callable(close_retriever):
+            try:
+                close_retriever(clear_system_cache=True)
+            except TypeError:
+                close_retriever()
+            except Exception:
+                LOGGER.debug(
+                    "Failed to close cached retriever before local store mutation.",
+                    exc_info=True,
+                )
+    get_rag_service.cache_clear()
 
 
 def _current_document_index(settings: AppSettings) -> list[IndexedDocument]:

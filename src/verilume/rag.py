@@ -583,6 +583,9 @@ class VerilumeRAG:
         )
         self._response_cache: dict[tuple, tuple[float, RAGResponse]] = {}
 
+    def close(self) -> None:
+        self.retriever.close(clear_system_cache=True)
+
     def ask(
         self,
         question: str,

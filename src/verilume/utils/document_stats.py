@@ -53,6 +53,12 @@ def _persisted_collection_count(settings: AppSettings) -> int:
                 client.close()
             except Exception:
                 pass
+            try:
+                clear_cache = getattr(client, "clear_system_cache", None)
+                if callable(clear_cache):
+                    clear_cache()
+            except Exception:
+                pass
 
 
 def _count_pdf_pages(path: Path) -> int:

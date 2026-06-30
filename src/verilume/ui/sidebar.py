@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from html import escape
 from typing import Any
+from urllib.parse import urlparse
 
 import streamlit as st
 
@@ -268,16 +270,6 @@ def render_sidebar(
             else:
                 st.caption("No indexed documents available to remove.")
 
-            st.caption("Library snapshot")
-
-            col_1, col_2 = st.columns(2)
-            col_1.metric("Documents", stats.get("uploaded_documents", 0))
-            col_2.metric("PDF pages", stats.get("pdf_pages", 0))
-
-            col_3, col_4 = st.columns(2)
-            col_3.metric("Chunks", stats.get("chunks_indexed", 0))
-            col_4.metric("Types", stats.get("file_types", 0))
-
         # -------------------------
         # Retrieval
         # -------------------------
@@ -298,12 +290,14 @@ def render_sidebar(
             )
 
             retrieval_score_threshold = st.slider(
-                "Score threshold",
+                "Relevance threshold",
                 min_value=0.0,
                 max_value=0.95,
                 value=float(base_settings.retrieval_score_threshold),
                 step=0.05,
+                help="Higher = stricter match, fewer but more accurate citations. Recommended: 0.50+",
             )
+            st.caption("Higher values reduce hallucinated citations. Default: 0.50")
 
             enable_query_rewrite = st.toggle(
                 "Query rewriting",
@@ -582,6 +576,42 @@ def _active_model_html(label: str, model: str) -> str:
     )
 
 
+_PRIVATE_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / AWS metadata
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
+
+def _validate_custom_endpoint(url: str) -> str:
+    """Return an error message if the URL is unsafe, or '' if it is acceptable."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Could not parse URL."
+    if parsed.scheme != "https":
+        return "Only https:// endpoints are allowed."
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return "URL must include a hostname."
+    if hostname.lower() in {"localhost", "0.0.0.0"}:
+        return "Loopback addresses are not allowed."
+    try:
+        addr = ipaddress.ip_address(hostname)
+        for net in _PRIVATE_NETWORKS:
+            if addr in net:
+                return f"Private/internal IP addresses are not allowed ({hostname})."
+    except ValueError:
+        pass  # hostname is a domain name, not a raw IP — that's fine
+    return ""
+
+
 def _render_web_provider_settings(
     base_settings: AppSettings,
     provider: str,
@@ -654,11 +684,16 @@ def _render_web_provider_settings(
             placeholder="My Search Provider",
         )
 
-        overrides["custom_web_search_endpoint"] = st.text_input(
+        raw_endpoint = st.text_input(
             "Custom endpoint",
             value=base_settings.custom_web_search_endpoint,
             placeholder="https://api.example.com/search?q={query}&key={api_key}",
         )
+        endpoint_error = _validate_custom_endpoint(raw_endpoint)
+        if endpoint_error:
+            st.error(f"Endpoint rejected: {endpoint_error}")
+        else:
+            overrides["custom_web_search_endpoint"] = raw_endpoint
 
         overrides["custom_web_search_api_key"] = st.text_input(
             "Custom API key",
@@ -667,8 +702,8 @@ def _render_web_provider_settings(
         )
 
         st.caption(
-            "Endpoint may use `{query}` and `{api_key}` placeholders. "
-            "If `{query}` is absent, Verilume sends `?q=<query>`."
+            "Endpoint must use https://. "
+            "Supports `{query}` and `{api_key}` placeholders."
         )
 
         return overrides

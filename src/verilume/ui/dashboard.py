@@ -17,6 +17,15 @@ from verilume.settings import AppSettings
 DEFAULT_DASHBOARD_COLLAPSED = True
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _generate_prompts_cached(
+    recent_documents: tuple[str, ...],
+    recent_activity: tuple[str, ...],
+    settings: AppSettings,
+) -> list[PromptSuggestion]:
+    return generate_suggested_prompts(list(recent_documents), list(recent_activity), settings)
+
+
 def render_dashboard(
     settings: AppSettings,
     library_stats: dict[str, int],
@@ -29,12 +38,18 @@ def render_dashboard(
         st.session_state["dashboard_collapsed"] = DEFAULT_DASHBOARD_COLLAPSED
 
     dashboard_collapsed = bool(st.session_state.get("dashboard_collapsed", False))
+    chevron = "⌄ Dashboard" if dashboard_collapsed else "⌃ Dashboard"
+    st.markdown(
+        '<div class="veri-dashboard-divider">'
+        f'<span class="veri-dashboard-divider-label">{escape(settings.app_title)} workspace</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
     _col_spacer, col_toggle = st.columns([5, 1])
     with col_toggle:
-        button_label = "Expand dashboard" if dashboard_collapsed else "Collapse dashboard"
         st.markdown('<div class="veri-dark-button-anchor veri-dashboard-toggle-wrap"></div>', unsafe_allow_html=True)
         if st.button(
-            button_label,
+            chevron,
             help=f"Show or hide the {settings.app_title} dashboard.",
             key="dashboard-collapse-toggle",
             use_container_width=True,
@@ -53,7 +68,12 @@ def render_dashboard(
     with activity_col:
         render_recent_activity(recent_activity)
     with prompt_col:
-        render_suggested_prompts(suggested_prompts)
+        # Generate prompts here, after the early-return, so they are skipped
+        # entirely when the dashboard is collapsed (saves compute on every rerun).
+        effective_prompts = suggested_prompts if suggested_prompts is not None else _generate_prompts_cached(
+            tuple(recent_documents), tuple(recent_activity), settings
+        )
+        render_suggested_prompts(effective_prompts)
 
 
 def render_metric_cards(library_stats: dict[str, int]) -> None:

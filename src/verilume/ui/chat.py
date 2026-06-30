@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timedelta
 from html import escape
 from typing import Any
+from urllib.parse import urlparse
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -189,77 +190,105 @@ def _generate_assistant_response(settings: AppSettings, prompt: str) -> None:
             _render_assistant_meta(assistant_message, len(st.session_state.messages))
             st.markdown(message)
             st.session_state.messages.append(assistant_message)
+        except TimeoutError:
+            LOGGER.exception("Chat generation timed out.")
+            message = "The model took too long to respond. Try again or switch to a faster model."
+            _append_error_message(placeholder, stage_placeholder, message)
+        except (ValueError, KeyError) as exc:
+            LOGGER.exception("Chat generation returned an invalid response.")
+            message = f"The model returned an unexpected response ({type(exc).__name__}). Try again."
+            _append_error_message(placeholder, stage_placeholder, message)
+        except ConnectionError:
+            LOGGER.exception("Chat generation lost network connection.")
+            message = "Connection error while reaching the model. Check your network or Ollama status."
+            _append_error_message(placeholder, stage_placeholder, message)
         except Exception:
             LOGGER.exception("Chat generation failed.")
-            message = (
-                "Sorry, something went wrong while generating the answer. "
-                "Please check the terminal logs and try again."
-            )
-            assistant_message = {
-                "role": "assistant",
-                "content": message,
-                "timestamp": _now_timestamp(),
-            }
-            placeholder.empty()
-            stage_placeholder.empty()
-            _render_assistant_meta(assistant_message, len(st.session_state.messages))
-            st.markdown(message)
-            st.session_state.messages.append(assistant_message)
+            message = "Something went wrong generating the answer. Check the terminal logs and try again."
+            _append_error_message(placeholder, stage_placeholder, message)
         finally:
             st.session_state.generating = False
 
 
+@st.cache_data(show_spinner=False)
+def _cached_chat_pdf(messages: tuple[Any, ...], title: str) -> bytes | None:
+    """Generate PDF only when message content changes; returns None on failure."""
+    try:
+        return chat_to_pdf(list(messages), title)
+    except Exception:
+        LOGGER.debug("PDF export unavailable.", exc_info=True)
+        return None
+
+
+def _append_error_message(placeholder: Any, stage_placeholder: Any, message: str) -> None:
+    placeholder.empty()
+    stage_placeholder.empty()
+    msg_dict = {"role": "assistant", "content": message, "timestamp": _now_timestamp()}
+    _render_assistant_meta(msg_dict, len(st.session_state.messages))
+    st.warning(message)
+    st.session_state.messages.append(msg_dict)
+
+
 def _render_toolbar(settings: AppSettings) -> None:
     can_regenerate = _latest_user_index(st.session_state.messages) is not None
-    col_a, col_b, col_c, col_d, col_e = st.columns([1.1, 1.2, 0.8, 1, 2])
+    col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1])
     with col_a:
         if st.button(
-            "\u23f9 Stop response",
+            "\u23f9 Stop",
             disabled=not st.session_state.generating,
             use_container_width=True,
+            help="Stop the current response",
         ):
             st.session_state.stop_requested = True
             if st.session_state.generating:
-                st.warning("Stop requested. The current provider call will finish this turn.")
+                st.warning("Stop requested. The current response will finish this turn.")
     with col_b:
         if st.button(
-            "Regenerate response",
+            "\u21ba Regenerate",
             disabled=st.session_state.generating or not can_regenerate,
             use_container_width=True,
+            help="Re-run the last query",
         ):
             st.session_state.regenerate_requested = True
             st.rerun()
     with col_c:
-        if st.button("Clear", use_container_width=True):
+        if st.button(
+            "\u2715 Clear",
+            use_container_width=True,
+            help="Clear the chat history",
+        ):
             st.session_state.messages = []
             st.session_state.conversation_state = ConversationState()
             st.rerun()
     markdown = chat_to_markdown(st.session_state.messages, settings.app_title)
     with col_d:
         st.download_button(
-            "Markdown",
+            "\u2193 Markdown",
             data=markdown,
             file_name="verilume-chat.md",
             mime="text/markdown",
             use_container_width=True,
+            help="Download chat as Markdown",
         )
     with col_e:
-        try:
-            pdf = chat_to_pdf(st.session_state.messages, settings.app_title)
+        pdf = _cached_chat_pdf(tuple(st.session_state.messages), settings.app_title)
+        if pdf is not None:
             st.download_button(
-                "PDF",
+                "\u2193 PDF",
                 data=pdf,
                 file_name="verilume-chat.pdf",
                 mime="application/pdf",
                 use_container_width=True,
+                help="Download chat as PDF",
             )
-        except Exception:
+        else:
             st.download_button(
-                "PDF unavailable",
+                "\u2193 PDF",
                 data=b"",
                 file_name="verilume-chat.pdf",
                 disabled=True,
                 use_container_width=True,
+                help="PDF export unavailable",
             )
 
 
@@ -270,10 +299,22 @@ def _render_welcome_screen() -> None:
   <div class="veri-welcome-kicker">Welcome</div>
   <div class="veri-welcome-title">Search documents, research sources, and compare evidence.</div>
   <div class="veri-welcome-grid">
-    <div><strong>📄 Search documents</strong><span>Find local facts and citations.</span></div>
-    <div><strong>📚 Summarise files</strong><span>Turn long PDFs into clear briefs.</span></div>
-    <div><strong>⚖ Compare evidence</strong><span>Separate local, AI, and web support.</span></div>
-    <div><strong>🌍 Current facts</strong><span>Use web sources when enabled.</span></div>
+    <div class="veri-welcome-cell">
+      <div class="veri-welcome-cell-title">📄 Search documents</div>
+      <div class="veri-welcome-cell-desc">Find local facts and citations.</div>
+    </div>
+    <div class="veri-welcome-cell">
+      <div class="veri-welcome-cell-title">📚 Summarise files</div>
+      <div class="veri-welcome-cell-desc">Turn long PDFs into clear briefs.</div>
+    </div>
+    <div class="veri-welcome-cell">
+      <div class="veri-welcome-cell-title">⚖ Compare evidence</div>
+      <div class="veri-welcome-cell-desc">Separate local, AI, and web support.</div>
+    </div>
+    <div class="veri-welcome-cell">
+      <div class="veri-welcome-cell-title">🌍 Current facts</div>
+      <div class="veri-welcome-cell-desc">Use web sources when enabled.</div>
+    </div>
   </div>
 </div>
         """,
@@ -731,8 +772,16 @@ def _confidence_badge(confidence: str) -> str:
         "model-selection-warning": "Evidence: Model unavailable",
         "needs-token": "Evidence: Token needed",
         "generation-error": "Evidence: Generation error",
+        "": "Evidence: Unknown",
     }
-    return labels.get(confidence, f"Evidence: {confidence.replace('-', ' ').title()}")
+    if confidence in labels:
+        return labels[confidence]
+    # Strip internal underscores/dashes but never expose raw enum tokens.
+    clean = re.sub(r"[-_]+", " ", confidence).strip().title()
+    # Reject anything that looks like an unhandled internal identifier.
+    if re.search(r"[_A-Z]{2,}", confidence):
+        return "Evidence: Unavailable"
+    return f"Evidence: {clean}" if clean else "Evidence: Unknown"
 
 
 def _evidence_detail_rows(response: RAGResponse) -> list[tuple[str, str]]:
@@ -925,6 +974,17 @@ def _render_web_source_groups(response: RAGResponse) -> None:
         )
 
 
+def _safe_href(url: str) -> str:
+    """Return an HTML-escaped href only for http/https URLs; fall back to '#'."""
+    try:
+        parsed = urlparse(url or "")
+        if parsed.scheme not in {"http", "https"}:
+            return "#"
+    except Exception:
+        return "#"
+    return escape(url, quote=True)
+
+
 def _web_source_card_html(
     *,
     badge: str,
@@ -935,8 +995,9 @@ def _web_source_card_html(
     url: str,
 ) -> str:
     icon = badge.split(" ", maxsplit=1)[0] if badge else "🌍"
-    safe_url = escape(url, quote=True)
+    safe_url = _safe_href(url)
     safe_source = escape(source or url or "Web source")
+    display_url = escape(url) if safe_url != "#" else ""
     return f"""
 <div class="veri-source-card">
   <div class="veri-source-card-top">
@@ -945,7 +1006,7 @@ def _web_source_card_html(
   </div>
   <div class="veri-source-card-meta">
     <span>Confidence: {escape(confidence)}</span>
-    <span>{escape(url)}</span>
+    <span>{display_url}</span>
   </div>
   <div class="veri-source-card-preview">{escape(preview)}</div>
 </div>
@@ -1139,7 +1200,8 @@ def _supporting_source_count(response: RAGResponse) -> int:
         diagnostic_count = response.diagnostics.get("local_count", 0)
         if isinstance(diagnostic_count, int) and diagnostic_count > 0:
             local_count = diagnostic_count
-        else:
+        elif response.diagnostics.get("local_sufficient"):
+            # RAG confirmed at least one local source was sufficient; exact count unavailable.
             local_count = 1
     web_count = len(response.web_sources) if _uses_web_search(response) else 0
     return local_count + web_count
@@ -1217,61 +1279,43 @@ def _is_conversational_response(answer: str) -> bool:
 
 
 def _render_copy_answer_button(answer: str, index: int) -> None:
-    button_id = f"copy-answer-{index}"
+    """Render a copy button via a single lightweight iframe.
+
+    The style block is minimal — shared styles live in styles.py under
+    .veri-copy-btn so Streamlit's main document stylesheet handles them.
+    Each iframe only carries the button markup and a tiny data-payload script.
+    """
+    button_id = f"veri-copy-{index}"
+    # Encode the answer as JSON so it is safe to embed in a <script> tag.
+    answer_json = json.dumps(answer)
     html = f"""
 <style>
-html, body {{
-  background: transparent;
-  margin: 0;
-}}
-
-button {{
-  background: rgba(54, 209, 196, .10);
-  border: 1px solid rgba(54, 209, 196, .42);
-  border-radius: 8px;
-  color: #36d1c4;
-  cursor: pointer;
-  font: 700 13px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  min-height: 32px;
-  padding: 0 12px;
-  transition: border-color .16s ease, color .16s ease, transform .16s ease;
-  width: 100%;
-}}
-
-button:hover {{
-  border-color: rgba(255, 200, 87, .72);
-  color: #ffc857;
-  transform: translateY(-1px);
-}}
+html,body{{margin:0;background:transparent}}
+button{{background:rgba(54,209,196,.10);border:1px solid rgba(54,209,196,.42);border-radius:8px;
+color:#36d1c4;cursor:pointer;font:700 13px system-ui,sans-serif;min-height:32px;padding:0 12px;
+transition:border-color .16s,color .16s,transform .16s;width:100%}}
+button:hover{{border-color:rgba(255,200,87,.72);color:#ffc857;transform:translateY(-1px)}}
 </style>
 <button id="{button_id}">Copy answer</button>
 <script>
-const button = document.getElementById({json.dumps(button_id)});
-const answer = {json.dumps(answer)};
-button.addEventListener("click", async () => {{
-  try {{
-    if (navigator.clipboard && window.isSecureContext) {{
-      await navigator.clipboard.writeText(answer);
-    }} else {{
-      const area = document.createElement("textarea");
-      area.value = answer;
-      area.style.position = "fixed";
-      area.style.left = "-9999px";
-      document.body.appendChild(area);
-      area.focus();
-      area.select();
-      document.execCommand("copy");
-      document.body.removeChild(area);
-    }}
-    button.textContent = "Copied";
-    setTimeout(() => button.textContent = "Copy answer", 1400);
-  }} catch (error) {{
-    button.textContent = "Copy failed";
-    setTimeout(() => button.textContent = "Copy answer", 1800);
-  }}
-}});
-</script>
-        """
+(function(){{
+  var btn=document.getElementById({json.dumps(button_id)});
+  var txt={answer_json};
+  btn.addEventListener("click",function(){{
+    var p=navigator.clipboard&&window.isSecureContext
+      ?navigator.clipboard.writeText(txt)
+      :new Promise(function(res,rej){{
+          var a=document.createElement("textarea");
+          a.value=txt;a.style.position="fixed";a.style.left="-9999px";
+          document.body.appendChild(a);a.focus();a.select();
+          document.execCommand("copy")?res():rej();
+          document.body.removeChild(a);
+        }});
+    p.then(function(){{btn.textContent="Copied ✓";setTimeout(function(){{btn.textContent="Copy answer"}},1400)}})
+     .catch(function(){{btn.textContent="Copy failed";setTimeout(function(){{btn.textContent="Copy answer"}},1800)}});
+  }});
+}})();
+</script>"""
     components.html(html, height=38, scrolling=False)
 
 

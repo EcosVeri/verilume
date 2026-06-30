@@ -560,7 +560,7 @@ class AppSettings:
     enable_query_rewrite: bool = True
     query_rewrite_min_history: int = 1
     query_rewrite_similarity_threshold: float = 0.92
-    retrieval_score_threshold: float = 0.35
+    retrieval_score_threshold: float = 0.50
     retrieval_mode: str = "hybrid"
     rrf_constant: int = 60
     rrf_dense_weight: float = 1.0

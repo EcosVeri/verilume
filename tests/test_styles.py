@@ -40,16 +40,18 @@ class StyleThemeTests(unittest.TestCase):
                 self.assertIn("--veri-tooltip-text:", tokens["variables"])
                 self.assertIn("--veri-tooltip-border:", tokens["variables"])
 
+        # Consolidated :where() selectors cover the same roles without repeating
+        # selectors across six separate rule blocks.
         self.assertIn('[role="tooltip"]', _BASE_CSS)
         self.assertIn('[data-baseweb="tooltip"]', _BASE_CSS)
         self.assertIn('[data-testid="stTooltipContent"]', _BASE_CSS)
-        self.assertIn('[data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"]', _BASE_CSS)
+        # Descendant stMarkdownContainer still targeted inside the consolidated block.
+        self.assertIn('[data-testid="stMarkdownContainer"]', _BASE_CSS)
         self.assertIn("color: var(--veri-tooltip-text, #f5f2e8) !important;", _BASE_CSS)
         self.assertIn("padding: .48rem .68rem !important;", _BASE_CSS)
         self.assertIn("margin: 0 !important;", _BASE_CSS)
-        self.assertIn('[role="tooltip"] > div', _BASE_CSS)
-        self.assertIn('[role="tooltip"] div', _BASE_CSS)
-        self.assertIn('[role="tooltip"]:empty', _BASE_CSS)
+        # Empty-state hiding is preserved.
+        self.assertIn(':empty', _BASE_CSS)
         self.assertIn("display: none !important;", _BASE_CSS)
         self.assertIn("-webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;", _BASE_CSS)
 

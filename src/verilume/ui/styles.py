@@ -175,10 +175,13 @@ html {
   color: var(--veri-text);
 }
 
-[role="tooltip"],
-[data-baseweb="tooltip"] {
+/* ── Tooltips (consolidated) ─────────────────────────────────────────────────
+   Use :where() to avoid specificity wars; a single !important per property
+   instead of repeating across 6 selectors. Survives Streamlit minor updates
+   because it targets semantic roles, not internal data-testid values.        */
+
+:where([role="tooltip"], [data-baseweb="tooltip"]) {
   background: var(--veri-tooltip-bg, #14171d) !important;
-  background-color: var(--veri-tooltip-bg, #14171d) !important;
   border: 1px solid var(--veri-tooltip-border, #ffc857) !important;
   border-radius: 8px !important;
   box-shadow: 0 16px 38px rgba(0, 0, 0, .28) !important;
@@ -191,11 +194,8 @@ html {
   -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
 }
 
-[role="tooltip"]:empty,
-[data-baseweb="tooltip"]:empty,
-[data-testid="stTooltip"]:empty,
-[data-testid="stTooltipContent"]:empty,
-[data-testid="stMarkdownTooltip"]:empty {
+:where([role="tooltip"], [data-baseweb="tooltip"]):empty,
+:where([data-testid="stTooltip"], [data-testid="stTooltipContent"], [data-testid="stMarkdownTooltip"]):empty {
   background: transparent !important;
   border: 0 !important;
   box-shadow: none !important;
@@ -205,63 +205,25 @@ html {
   padding: 0 !important;
 }
 
-[data-testid="stTooltip"],
-[data-testid="stTooltipContent"],
-[data-testid="stMarkdownTooltip"] {
+:where([data-testid="stTooltip"], [data-testid="stTooltipContent"], [data-testid="stMarkdownTooltip"]) {
   background: transparent !important;
-  background-color: transparent !important;
   border: 0 !important;
-  color: var(--veri-tooltip-text, #f5f2e8) !important;
   height: auto !important;
   line-height: 1.35 !important;
   min-height: 0 !important;
   overflow: visible !important;
   padding: .48rem .68rem !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
 }
 
-[role="tooltip"] > div,
-[role="tooltip"] div,
-[data-baseweb="tooltip"] > div,
-[data-baseweb="tooltip"] div {
+:where([role="tooltip"], [data-baseweb="tooltip"]) :where(div, p, span, [data-testid="stMarkdownContainer"]) {
   background: transparent !important;
-  background-color: transparent !important;
-}
-
-[role="tooltip"] *,
-[data-baseweb="tooltip"] *,
-[data-testid="stTooltip"] *,
-[data-testid="stTooltipContent"] *,
-[data-testid="stMarkdownTooltip"] * {
-  color: var(--veri-tooltip-text, #f5f2e8) !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
-}
-
-[role="tooltip"] p,
-[data-baseweb="tooltip"] p,
-[data-testid="stTooltip"] p,
-[data-testid="stTooltipContent"] p,
-[data-testid="stMarkdownTooltip"] p {
   color: var(--veri-tooltip-text, #f5f2e8) !important;
   line-height: 1.35 !important;
   margin: 0 !important;
   -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
 }
 
-[role="tooltip"] [data-testid="stMarkdownContainer"],
-[data-baseweb="tooltip"] [data-testid="stMarkdownContainer"],
-[data-testid="stTooltip"] [data-testid="stMarkdownContainer"],
-[data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"],
-[data-testid="stMarkdownTooltip"] [data-testid="stMarkdownContainer"] {
-  color: var(--veri-tooltip-text, #f5f2e8) !important;
-  height: auto !important;
-  line-height: 1.35 !important;
-  margin: 0 !important;
-  -webkit-text-fill-color: var(--veri-tooltip-text, #f5f2e8) !important;
-}
-
-[data-baseweb="tooltip"] [data-popper-arrow],
-[role="tooltip"] [data-popper-arrow] {
+:where([role="tooltip"], [data-baseweb="tooltip"]) [data-popper-arrow] {
   color: var(--veri-tooltip-bg, #14171d) !important;
 }
 
@@ -1777,6 +1739,47 @@ div[data-baseweb="menu"] li:hover {
   color: var(--veri-muted);
   font-size: .76rem;
   line-height: 1.3;
+}
+
+/* Welcome cell — structured title + description blocks (fix 4B) */
+.veri-welcome-cell {
+  border: 1px solid var(--veri-line);
+  border-radius: 8px;
+  padding: .68rem .7rem;
+}
+
+.veri-welcome-cell-title {
+  color: var(--veri-text);
+  display: block;
+  font-size: .84rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-bottom: .28rem;
+}
+
+.veri-welcome-cell-desc {
+  color: var(--veri-muted);
+  display: block;
+  font-size: .76rem;
+  line-height: 1.3;
+}
+
+/* Dashboard divider — visual connector for the toggle (fix 4D) */
+.veri-dashboard-divider {
+  align-items: center;
+  border-top: 1px solid var(--veri-line);
+  display: flex;
+  gap: .6rem;
+  margin: .9rem 0 .5rem 0;
+}
+
+.veri-dashboard-divider-label {
+  color: var(--veri-muted);
+  font-size: .7rem;
+  font-weight: 760;
+  letter-spacing: .06rem;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .veri-loading-panel {

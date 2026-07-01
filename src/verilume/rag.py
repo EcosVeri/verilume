@@ -598,7 +598,7 @@ class VerilumeRAG:
     ) -> RAGResponse:
         history = history or []
         try:
-            return self._ask_impl(question, history, conversation_state, should_stop, on_stage)
+            response = self._ask_impl(question, history, conversation_state, should_stop, on_stage)
         except GenerationStopped:
             raise
         except Exception as exc:
@@ -621,7 +621,8 @@ class VerilumeRAG:
                     "evidence_winner": "none",
                 },
             )
-            return _attach_conversation_state(response, state, question, question)
+            response = _attach_conversation_state(response, state, question, question)
+        return _ensure_stable_diagnostics(response)
 
     def _ask_impl(
         self,
@@ -7559,6 +7560,42 @@ def _format_history(history, max_chars=3000):
             lines.append(f"{item.role}: {content}")
     text = "\n".join(lines)
     return text[-max_chars:] if len(text) > max_chars else text
+
+
+# Diagnostic keys the UI and exports may read directly. They must always exist
+# as explicit booleans so a missing key can never break rendering or tests.
+_STABLE_DIAGNOSTIC_FLAGS = (
+    "used_local",
+    "used_web",
+    "used_model_knowledge",
+    "parallel_model_with_web",
+    "local_sufficient",
+    "model_sufficient",
+)
+
+
+def _ensure_stable_diagnostics(response: RAGResponse) -> RAGResponse:
+    """Guarantee the stable diagnostic flags exist as booleans on every response.
+
+    Existing values win; anything missing is inferred from the response so the
+    schema is complete and self-consistent regardless of which pipeline branch
+    produced the answer.
+    """
+    diagnostics = dict(response.diagnostics or {})
+    inferred = {
+        "used_local": bool(response.local_sources)
+        or response.confidence in {"local-grounded", "local-web-assisted"},
+        "used_web": bool(response.used_web) or bool(response.web_sources),
+        "used_model_knowledge": response.confidence == "model-only",
+        "parallel_model_with_web": False,
+        "local_sufficient": False,
+        "model_sufficient": False,
+    }
+    for key in _STABLE_DIAGNOSTIC_FLAGS:
+        value = diagnostics.get(key)
+        diagnostics[key] = bool(value) if value is not None else bool(inferred[key])
+    response.diagnostics = diagnostics
+    return response
 
 
 def _check_generation_stop(should_stop):

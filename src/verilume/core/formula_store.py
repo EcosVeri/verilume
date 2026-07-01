@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from verilume.core.formula_extraction import FormulaItem
 
@@ -91,10 +92,15 @@ class FormulaStore:
             ).fetchall()
         return [_item_from_row(row) for row in rows]
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:

@@ -1991,7 +1991,7 @@ a {
 }
 
 .veri-onboard-mark.done {
-  color: var(--veri-teal, #36d1c4);
+  color: var(--veri-green, #7bd88f);
 }
 
 .veri-onboard-mark.todo {

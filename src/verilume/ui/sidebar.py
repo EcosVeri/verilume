@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import ipaddress
 from dataclasses import dataclass
 from html import escape
 from typing import Any
-from urllib.parse import urlparse
 
 import streamlit as st
 
+from verilume.core.web_search import UnsafeURLError, validate_public_http_url
 from verilume.ingest import removable_documents, supported_extensions
 from verilume.settings import (
     DEFAULT_HF_MODEL_CHOICES,
@@ -576,39 +575,19 @@ def _active_model_html(label: str, model: str) -> str:
     )
 
 
-_PRIVATE_NETWORKS = (
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),  # link-local / AWS metadata
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-)
-
-
 def _validate_custom_endpoint(url: str) -> str:
-    """Return an error message if the URL is unsafe, or '' if it is acceptable."""
+    """Return an error message if the URL is unsafe, or '' if it is acceptable.
+
+    Delegates to the shared core validator so the UI check and the runtime check
+    in CustomJsonSearch.search cannot drift apart. DNS resolution is skipped here
+    to keep keystroke validation fast; the request path enforces it with DNS.
+    """
     if not url:
         return ""
     try:
-        parsed = urlparse(url)
-    except Exception:
-        return "Could not parse URL."
-    if parsed.scheme != "https":
-        return "Only https:// endpoints are allowed."
-    hostname = parsed.hostname or ""
-    if not hostname:
-        return "URL must include a hostname."
-    if hostname.lower() in {"localhost", "0.0.0.0"}:
-        return "Loopback addresses are not allowed."
-    try:
-        addr = ipaddress.ip_address(hostname)
-        for net in _PRIVATE_NETWORKS:
-            if addr in net:
-                return f"Private/internal IP addresses are not allowed ({hostname})."
-    except ValueError:
-        pass  # hostname is a domain name, not a raw IP — that's fine
+        validate_public_http_url(url, resolve_dns=False)
+    except UnsafeURLError as exc:
+        return str(exc)
     return ""
 
 

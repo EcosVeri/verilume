@@ -363,6 +363,13 @@ def save_user_config(
         encoding="utf-8",
     )
 
+    # This file can hold API keys — keep it owner-only (0600). Best-effort:
+    # filesystems without POSIX permissions (e.g. some Windows setups) will no-op.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
     return path
 
 
@@ -487,6 +494,9 @@ class AppSettings:
     formula_store_path: Path = DATA_HOME / "formulas.sqlite"
     ocr_block_store_path: Path = DATA_HOME / "ocr_blocks.sqlite"
     structured_document_store_path: Path = DATA_HOME / "structured_documents.sqlite"
+    # Upload guardrails — enforced before bytes are written to disk, not just shown in the UI.
+    max_upload_bytes: int = 200 * 1024 * 1024
+    max_upload_files: int = 200
     benchmark_mode: bool = False
 
     # Embeddings
@@ -1019,6 +1029,8 @@ class AppSettings:
             # Storage
             docs_dir=_path("DOCS_DIR", defaults.docs_dir),
             chroma_dir=_path("CHROMA_DIR", defaults.chroma_dir),
+            max_upload_bytes=_int("MAX_UPLOAD_BYTES", defaults.max_upload_bytes),
+            max_upload_files=_int("MAX_UPLOAD_FILES", defaults.max_upload_files),
             collection_name=os.getenv(
                 "COLLECTION_NAME",
                 defaults.collection_name,

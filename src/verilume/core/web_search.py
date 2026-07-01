@@ -3,19 +3,114 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import re
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Type
-from urllib.parse import parse_qs, parse_qsl, quote_plus, urlencode, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote_plus, urlencode, unquote, urlparse, urlsplit
 
 import requests
 from tavily import TavilyClient
 
 from verilume.core.schemas import WebSource
 from verilume.settings import AppSettings
+
+
+class UnsafeURLError(ValueError):
+    """Raised when a URL targets a non-public or otherwise disallowed destination."""
+
+
+_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / cloud metadata (169.254.169.254)
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+
+def _ip_is_blocked(value: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    ):
+        return True
+    return any(addr in net for net in _BLOCKED_NETWORKS)
+
+
+def validate_public_http_url(
+    url: str,
+    *,
+    allow_http: bool = False,
+    resolve_dns: bool = True,
+) -> None:
+    """Raise :class:`UnsafeURLError` if ``url`` is not a safe public HTTP(S) target.
+
+    Guards against the common SSRF vectors for user-configured endpoints:
+    non-HTTP(S) schemes, embedded credentials, loopback/private/link-local hosts
+    (including cloud metadata), and — when ``resolve_dns`` — domains that resolve
+    into a private range. DNS resolution here narrows but cannot fully close a
+    rebinding attack (the request re-resolves), so treat this as defense in depth.
+    """
+    if not url or not url.strip():
+        raise UnsafeURLError("URL is empty.")
+    try:
+        parsed = urlsplit(url.strip())
+    except Exception as exc:  # noqa: BLE001 - normalize any parse failure
+        raise UnsafeURLError("Could not parse URL.") from exc
+
+    allowed = {"https"} | ({"http"} if allow_http else set())
+    if parsed.scheme not in allowed:
+        raise UnsafeURLError(f"Only {' or '.join(sorted(allowed))} URLs are allowed.")
+    if parsed.username or parsed.password:
+        raise UnsafeURLError("URLs with embedded credentials are not allowed.")
+
+    hostname = (parsed.hostname or "").strip()
+    if not hostname:
+        raise UnsafeURLError("URL must include a hostname.")
+    if hostname.lower() in {"localhost", "localhost.localdomain", "ip6-localhost"}:
+        raise UnsafeURLError("Loopback hosts are not allowed.")
+    if _ip_is_blocked(hostname):
+        raise UnsafeURLError(f"Private/internal addresses are not allowed ({hostname}).")
+
+    if resolve_dns and not _looks_like_ip(hostname):
+        try:
+            infos = socket.getaddrinfo(hostname, parsed.port or None)
+        except OSError:
+            infos = []
+        for info in infos:
+            if _ip_is_blocked(info[4][0]):
+                raise UnsafeURLError(f"{hostname} resolves to a private/internal address.")
+
+
+def _looks_like_ip(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_http_url(url: str) -> bool:
+    try:
+        return urlsplit(url.strip()).scheme in {"http", "https"}
+    except Exception:  # noqa: BLE001 - any parse failure means "not a safe URL"
+        return False
 
 
 DATE_PATTERN = re.compile(
@@ -630,6 +725,9 @@ class CustomJsonSearch(WebSearchService):
         elif self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        # Enforce SSRF protection in the core runtime, not only in the sidebar UI.
+        validate_public_http_url(endpoint)
+
         response = requests.get(
             endpoint,
             params=params,
@@ -792,7 +890,9 @@ def _sources_from_items(
 
         url = _first_text(item, "url", "link", "href")
 
-        if not url:
+        if not url or not _is_http_url(url):
+            # Drop javascript:, data:, file: and other non-web schemes at the
+            # source layer so they can never reach the model or a rendered link.
             continue
 
         title = (

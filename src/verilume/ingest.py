@@ -125,9 +125,26 @@ class IngestStateError(RuntimeError):
     """Raised when ingestion would leave the knowledge base degraded."""
 
 
-def save_uploaded_file(file_name: str, data: bytes, docs_dir: Path) -> Path:
-    docs_dir.mkdir(parents=True, exist_ok=True)
+class UploadTooLargeError(ValueError):
+    """Raised when an uploaded file exceeds the configured size limit."""
+
+
+def save_uploaded_file(
+    file_name: str,
+    data: bytes,
+    docs_dir: Path,
+    max_bytes: int | None = None,
+) -> Path:
     clean_name = Path(file_name).name
+    if not clean_name:
+        raise ValueError("Uploaded file has no usable name.")
+    # Enforce the size cap BEFORE writing so a huge upload cannot exhaust disk.
+    if max_bytes is not None and max_bytes > 0 and len(data) > max_bytes:
+        raise UploadTooLargeError(
+            f"{clean_name} is {len(data) / (1024 * 1024):.1f} MB, over the "
+            f"{max_bytes / (1024 * 1024):.0f} MB per-file limit."
+        )
+    docs_dir.mkdir(parents=True, exist_ok=True)
     target = docs_dir / clean_name
     target.write_bytes(data)
     return target

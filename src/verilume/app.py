@@ -7,7 +7,13 @@ import secrets
 
 import streamlit as st
 
-from verilume.ingest import DocumentIngestor, removable_documents, remove_documents, save_uploaded_file
+from verilume.ingest import (
+    DocumentIngestor,
+    UploadTooLargeError,
+    removable_documents,
+    remove_documents,
+    save_uploaded_file,
+)
 from verilume.rag import get_rag_service
 from verilume.settings import AppSettings, ensure_app_dirs
 from verilume.ui.chat import render_chat
@@ -107,8 +113,22 @@ def _handle_ingestion(sidebar: SidebarState) -> None:
         return
 
     settings = sidebar.settings
-    for uploaded_file in sidebar.uploaded_files:
-        save_uploaded_file(uploaded_file.name, uploaded_file.getvalue(), settings.docs_dir)
+    accepted = sidebar.uploaded_files[: settings.max_upload_files]
+    if len(sidebar.uploaded_files) > settings.max_upload_files:
+        st.warning(
+            f"Only the first {settings.max_upload_files} files were accepted; "
+            f"{len(sidebar.uploaded_files) - settings.max_upload_files} were skipped."
+        )
+    for uploaded_file in accepted:
+        try:
+            save_uploaded_file(
+                uploaded_file.name,
+                uploaded_file.getvalue(),
+                settings.docs_dir,
+                max_bytes=settings.max_upload_bytes,
+            )
+        except (UploadTooLargeError, ValueError) as exc:
+            st.error(str(exc))
 
     _release_rag_retriever(settings)
 

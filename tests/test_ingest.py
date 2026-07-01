@@ -258,6 +258,56 @@ class IngestCleanupTests(unittest.TestCase):
         self.assertIs(ingestor.retriever, fresh_retriever)
         self.assertEqual(stale_retriever.close_clear_system_cache_values, [True])
 
+    def _staging_settings(self, tmp_path: Path) -> AppSettings:
+        (tmp_path / "docs").mkdir(exist_ok=True)
+        return AppSettings(
+            docs_dir=tmp_path / "docs",
+            chroma_dir=tmp_path / "chroma",
+            manifest_path=tmp_path / "manifest.json",
+            formula_store_path=tmp_path / "formulas.sqlite",
+            ocr_block_store_path=tmp_path / "ocr.sqlite",
+            structured_document_store_path=tmp_path / "structured.sqlite",
+        )
+
+    def test_normal_build_seeds_staging_and_indexes_incrementally(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ingestor = DocumentIngestor(self._staging_settings(Path(tmp_dir)))
+            seeded: list[bool] = []
+            ingestor._seed_staging_from_live = lambda **kwargs: seeded.append(True)
+
+            empty = IngestResult(0, 0, 0, 0, 0)
+            with (
+                patch.object(
+                    DocumentIngestor, "_ingest_once", autospec=True, return_value=empty
+                ) as once,
+                patch.object(DocumentIngestor, "_install_staged_snapshot"),
+            ):
+                ingestor._ingest_staged(progress=None, reset=False)
+
+            # A normal build seeds staging from the live index and does NOT force
+            # a full re-embed, so unchanged files can be skipped by hash.
+            self.assertEqual(seeded, [True])
+            self.assertFalse(once.call_args.kwargs["force_all"])
+
+    def test_reset_build_skips_seeding_and_forces_full_reindex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ingestor = DocumentIngestor(self._staging_settings(Path(tmp_dir)))
+            seeded: list[bool] = []
+            ingestor._seed_staging_from_live = lambda **kwargs: seeded.append(True)
+
+            empty = IngestResult(0, 0, 0, 0, 0)
+            with (
+                patch.object(
+                    DocumentIngestor, "_ingest_once", autospec=True, return_value=empty
+                ) as once,
+                patch.object(DocumentIngestor, "_install_staged_snapshot"),
+            ):
+                ingestor._ingest_staged(progress=None, reset=True)
+
+            # Reset DB starts from an empty staging area and re-embeds everything.
+            self.assertEqual(seeded, [])
+            self.assertTrue(once.call_args.kwargs["force_all"])
+
     def test_removable_documents_and_remove_documents_stay_in_sync(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

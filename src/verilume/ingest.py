@@ -1018,7 +1018,7 @@ class DocumentIngestor:
             try:
                 if progress and reset:
                     progress("Preparing staged rebuild", 0, 1)
-                result = self._ingest_staged(progress=progress)
+                result = self._ingest_staged(progress=progress, reset=reset)
                 if progress and reset:
                     progress("Preparing staged rebuild", 1, 1)
 
@@ -1035,13 +1035,29 @@ class DocumentIngestor:
             finally:
                 self._cleanup_backup_snapshot(backup)
 
-    def _ingest_staged(self, progress: ProgressCallback | None) -> IngestResult:
+    def _ingest_staged(
+        self, progress: ProgressCallback | None, reset: bool = False
+    ) -> IngestResult:
         staging_root = Path(tempfile.mkdtemp(prefix="verilume-staging-"))
         staged_chroma = staging_root / "chroma_db"
         staged_manifest = staging_root / "ingestion_manifest.json"
         staged_formula_store = staging_root / "formulas.sqlite"
         staged_ocr_store = staging_root / "ocr_blocks.sqlite"
         staged_structured_store = staging_root / "structured_documents.sqlite"
+
+        # For a normal build, seed staging from the live snapshot so unchanged
+        # files are skipped (hash match) instead of re-parsed and re-embedded;
+        # only new/changed/removed files do work. A Reset DB build starts empty
+        # and re-embeds everything (force_all below), preserving its semantics.
+        if not reset:
+            self._seed_staging_from_live(
+                staged_chroma=staged_chroma,
+                staged_manifest=staged_manifest,
+                staged_formula_store=staged_formula_store,
+                staged_ocr_store=staged_ocr_store,
+                staged_structured_store=staged_structured_store,
+            )
+
         staged_settings = self.settings.with_overrides(
             chroma_dir=staged_chroma,
             manifest_path=staged_manifest,
@@ -1055,7 +1071,7 @@ class DocumentIngestor:
         staged.retriever = staged._create_retriever()
 
         try:
-            result = staged._ingest_once(reset=False, progress=progress, force_all=True)
+            result = staged._ingest_once(reset=False, progress=progress, force_all=reset)
             if result.errors:
                 preview = "; ".join(result.errors[:3])
                 raise IngestStateError(f"Staged ingestion failed: {preview}")
@@ -1231,6 +1247,39 @@ class DocumentIngestor:
             self.retriever.delete_document(stored_path)
             self._delete_specialized_document(Path(stored_path).name)
             manifest.pop(stored_path, None)
+
+    def _seed_staging_from_live(
+        self,
+        *,
+        staged_chroma: Path,
+        staged_manifest: Path,
+        staged_formula_store: Path,
+        staged_ocr_store: Path,
+        staged_structured_store: Path,
+    ) -> None:
+        """Copy the live index into the staging area for an incremental build.
+
+        The retriever must be flushed first so its Chroma SQLite file is on disk
+        and consistent before we copy it. Missing sources simply leave the staged
+        counterpart absent, which makes the staged build treat the run as a
+        first-time (full) index.
+        """
+        self.retriever.close(clear_system_cache=False)
+        try:
+            if self.settings.chroma_dir.exists():
+                shutil.copytree(self.settings.chroma_dir, staged_chroma, dirs_exist_ok=True)
+            if self.settings.manifest_path.exists():
+                staged_manifest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.settings.manifest_path, staged_manifest)
+            if self.settings.formula_store_path.exists():
+                shutil.copy2(self.settings.formula_store_path, staged_formula_store)
+            if self.settings.ocr_block_store_path.exists():
+                shutil.copy2(self.settings.ocr_block_store_path, staged_ocr_store)
+            if self.settings.structured_document_store_path.exists():
+                shutil.copy2(self.settings.structured_document_store_path, staged_structured_store)
+        finally:
+            # Reopen the live retriever so callers (e.g. rollback checks) keep working.
+            self.retriever = self._create_retriever()
 
     def _create_backup_snapshot(self) -> dict[str, object]:
         root = Path(tempfile.mkdtemp(prefix="verilume-ingest-backup-"))

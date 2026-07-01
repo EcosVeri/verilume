@@ -1488,6 +1488,10 @@ class VerilumeRAG:
                     web_sources = self._rerank_web(_web_rerank_query(query, web_queries), web_sources)
                     diagnostics["web_count"] = len(web_sources)
                     _emit_stage(on_stage, f"✓ Web evidence ({len(web_sources)} sources)")
+                except GenerationStopped:
+                    # A user stop is not a web failure — let it propagate so the
+                    # pipeline aborts instead of mislabelling it as a web error.
+                    raise
                 except Exception as exc:
                     web_error = _clean_error_message(exc)
                     diagnostics["web_error"] = web_error
@@ -1502,6 +1506,8 @@ class VerilumeRAG:
                         model_relevance_query = _clean_web_query(query) if should_use_web else query
                         model_answer_relevant = _model_answer_supports_question(model_relevance_query, model_answer)
                         model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
+                    except GenerationStopped:
+                        raise
                     except GenerationError as exc:
                         generation_error = str(exc)
                         diagnostics["model_error"] = _clean_error_message(exc)
@@ -1518,6 +1524,8 @@ class VerilumeRAG:
                     model_answer = self.generator.answer_model_knowledge(query, list(history))
                     model_answer_relevant = _model_answer_supports_question(query, model_answer)
                     model_sufficient = self._is_sufficient(model_answer) and model_answer_relevant
+                except GenerationStopped:
+                    raise
                 except GenerationError as exc:
                     generation_error = str(exc)
                     diagnostics["model_error"] = _clean_error_message(exc)
@@ -1558,6 +1566,10 @@ class VerilumeRAG:
                     web_sources = self._rerank_web(_web_rerank_query(query, web_queries), web_sources)
                     diagnostics["web_count"] = len(web_sources)
                     _emit_stage(on_stage, f"✓ Web evidence ({len(web_sources)} sources)")
+                except GenerationStopped:
+                    # A user stop is not a web failure — let it propagate so the
+                    # pipeline aborts instead of mislabelling it as a web error.
+                    raise
                 except Exception as exc:
                     web_error = _clean_error_message(exc)
                     diagnostics["web_error"] = web_error
@@ -1608,6 +1620,7 @@ class VerilumeRAG:
             self.settings,
         )
 
+        _check_generation_stop(should_stop)
         _emit_stage(on_stage, "Verifying citations and generating final answer...")
         answer = self._generate_final_answer(
             question,

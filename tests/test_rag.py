@@ -3804,6 +3804,43 @@ class RAGRoutingTests(unittest.TestCase):
         with self.assertRaises(GenerationStopped):
             rag.ask("Who is this?", should_stop=lambda: True)
 
+    def test_stop_during_web_search_is_not_swallowed_as_web_error(self) -> None:
+        """A GenerationStopped raised inside web search must propagate out of ask(),
+        not be caught by the broad web/model `except Exception` and mislabelled as a
+        web error. should_stop stays False so only the propagation (not a later
+        checkpoint) can raise."""
+        rag = self._make_rag(local_answer="LOCAL_UNKNOWN", model_answer="MODEL_UNKNOWN")
+
+        def raise_stop(*args, **kwargs):
+            raise GenerationStopped("stopped mid web search")
+
+        rag._search_web_sources = raise_stop
+
+        with self.assertRaises(GenerationStopped):
+            rag.ask("What is the current price of gold today?", should_stop=lambda: False)
+
+    def test_stop_request_after_local_answer_aborts_before_model_knowledge_check(self) -> None:
+        """A stop signal raised right after local answer_local() must abort before the
+        next blocking step (model-knowledge check) runs, not just at the start/end of
+        the whole pipeline."""
+        rag = self._make_rag(local_answer="Local answer [S1]")
+        stop_after_local = {"value": False}
+        original_answer_local = rag.generator.answer_local
+
+        def answer_local_then_arm_stop(question, history, local_sources):
+            result = original_answer_local(question, history, local_sources)
+            stop_after_local["value"] = True
+            return result
+
+        rag.generator.answer_local = answer_local_then_arm_stop
+
+        with self.assertRaises(GenerationStopped):
+            rag.ask("What is in the file?", should_stop=lambda: stop_after_local["value"])
+
+        self.assertEqual(len(rag.generator.local_calls), 1)
+        self.assertEqual(rag.generator.model_calls, [])
+        self.assertEqual(rag.web_search.queries, [])
+
     def test_model_capacity_error_uses_web_when_web_is_configured(self) -> None:
         rag = self._make_rag(
             local_answer=LOCAL_UNKNOWN, web_answer="Web answer after model issue [W1]"

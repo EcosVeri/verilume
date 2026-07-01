@@ -251,18 +251,26 @@ def _poll_generation_impl(settings: AppSettings) -> None:
     stop_event: threading.Event = gen["stop_event"]
 
     if not result_box["done"]:
-        # Stop button is inside the fragment: clicking triggers a fragment-scoped rerun
-        # (Streamlit's guaranteed-immediate path), so the stop fires without any race
-        # against the main-script rerun scheduler.
-        _, col_stop = st.columns([6, 1])
-        with col_stop:
-            stop_clicked = st.button("⏹ Stop", key="_gen_stop", use_container_width=True)
-        # A stop can arrive from the toolbar (stop_requested) or the in-fragment
-        # button. Either way, signal the worker AND finalize the UI right now —
-        # do not wait for result_box["done"]. The background thread may still be
-        # blocked inside a non-cooperative network/model call; that abandoned
-        # worker winds itself down on its own cooperative checkpoints, and its
-        # late result is discarded because we drop the generation handle here.
+        # The Stop button lives inside this fragment because the fragment (unlike
+        # the main-script toolbar) re-executes on every run_every tick, so the
+        # button is genuinely live while a response is generating. Clicking it
+        # triggers a fragment-scoped rerun — Streamlit's guaranteed-immediate
+        # path — so the stop fires without racing the main-script scheduler.
+        # (A response that finishes before the first ~0.4s tick simply finalizes
+        # with no Stop shown — by then there is nothing left to stop.)
+        stop_clicked = st.button(
+            "⏹ Stop generating",
+            key="_gen_stop",
+            use_container_width=True,
+            type="primary",
+            help="Stop the current response",
+        )
+        # A stop can arrive from that button or from a queued stop_requested flag.
+        # Either way, signal the worker AND finalize the UI right now — do not
+        # wait for result_box["done"]. The background thread may still be blocked
+        # inside a non-cooperative network/model call; that abandoned worker winds
+        # itself down on its own cooperative checkpoints, and its late result is
+        # discarded because we drop the generation handle here.
         if stop_clicked or st.session_state.stop_requested:
             stop_event.set()
             _finalize_stopped_generation()
@@ -347,24 +355,12 @@ def _cached_chat_pdf(messages: tuple[Any, ...], title: str) -> bytes | None:
 
 def _render_toolbar(settings: AppSettings) -> None:
     can_regenerate = _latest_user_index(st.session_state.messages) is not None
-    col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1])
-    with col_a:
-        # A second Stop entry point lives inside _poll_generation_impl (fragment-scoped)
-        # for the guaranteed-immediate path. This toolbar button is enabled only while a
-        # response is in flight; clicking it flags a stop and signals the active worker so
-        # the next fragment tick finalizes immediately.
-        if st.button(
-            "\u23f9 Stop",
-            key="_toolbar_stop",
-            disabled=not st.session_state.generating,
-            use_container_width=True,
-            help="Stop the current response",
-        ):
-            st.session_state.stop_requested = True
-            gen = st.session_state.get(_GEN_STATE_KEY)
-            if gen is not None:
-                gen["stop_event"].set()
-            st.rerun()
+    # No Stop button here: this toolbar is rendered in the main script, which does
+    # not re-execute during the polling fragment's run_every ticks, so a toolbar
+    # widget's disabled state would be frozen from before generation started and
+    # could never become clickable. The live Stop lives inside the polling
+    # fragment (_poll_generation_impl), which re-renders every tick.
+    col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1])
     with col_b:
         if st.button(
             "\u21ba Regenerate",

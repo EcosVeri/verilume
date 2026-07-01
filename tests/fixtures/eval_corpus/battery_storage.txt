@@ -1,0 +1,8 @@
+Battery Storage Specification
+
+The lithium iron phosphate battery bank has a usable capacity of 13.5
+kilowatt-hours and a round-trip efficiency of 90 percent. Depth of discharge
+is rated at 100 percent with a warranty of 10 years or 4,000 cycles.
+
+Continuous power output is 5 kilowatts with a peak of 7 kilowatts for
+10 seconds. The operating temperature range is -10 to 45 degrees Celsius.

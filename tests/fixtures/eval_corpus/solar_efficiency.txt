@@ -1,0 +1,10 @@
+Solar Panel Efficiency Report
+
+Monocrystalline silicon panels in this study reached a peak conversion
+efficiency of 22.8 percent under standard test conditions. Polycrystalline
+panels averaged 17.4 percent. The measured temperature coefficient was
+-0.29 percent per degree Celsius.
+
+The recommended tilt angle for the test site at 40 degrees north latitude
+was 34 degrees for year-round energy yield. Annual output for a 5 kilowatt
+array was estimated at 7,200 kilowatt-hours.

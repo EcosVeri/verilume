@@ -1,0 +1,8 @@
+Wind Turbine Field Notes
+
+The three-blade horizontal-axis turbine has a rated capacity of 2.5 megawatts
+and a rotor diameter of 116 meters. Cut-in wind speed is 3 meters per second
+and the cut-out speed is 25 meters per second.
+
+Capacity factor at the coastal site averaged 41 percent over the reporting
+year. Scheduled maintenance occurs twice per year, in spring and autumn.

@@ -1,0 +1,33 @@
+{
+  "questions": [
+    {
+      "question": "What peak efficiency did the monocrystalline solar panels reach?",
+      "expected_documents": ["solar_efficiency.txt"]
+    },
+    {
+      "question": "What is the recommended tilt angle for the solar test site?",
+      "expected_documents": ["solar_efficiency.txt"]
+    },
+    {
+      "question": "What is the rated capacity of the wind turbine?",
+      "expected_documents": ["wind_turbine.txt"]
+    },
+    {
+      "question": "What is the cut-out wind speed for the turbine?",
+      "expected_documents": ["wind_turbine.txt"]
+    },
+    {
+      "question": "What is the round-trip efficiency of the battery bank?",
+      "expected_documents": ["battery_storage.txt"]
+    },
+    {
+      "question": "How many charge cycles is the battery warrantied for?",
+      "expected_documents": ["battery_storage.txt"]
+    },
+    {
+      "question": "What is the ticket price for the annual renewable energy gala dinner?",
+      "expected_documents": [],
+      "should_find": false
+    }
+  ]
+}

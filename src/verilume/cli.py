@@ -38,6 +38,19 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("stats", help="Show document statistics")
     subparsers.add_parser("config", help="Print effective configuration without secrets")
     subparsers.add_parser("doctor", help="Run deployment health checks")
+    eval_parser = subparsers.add_parser(
+        "eval", help="Score retrieval quality against a golden question set"
+    )
+    eval_parser.add_argument(
+        "--fixture",
+        default="tests/fixtures/eval_corpus",
+        help="Directory of corpus documents to index for evaluation",
+    )
+    eval_parser.add_argument(
+        "--gold",
+        default="",
+        help="Path to gold_questions.json (defaults to <fixture>/gold_questions.json)",
+    )
 
     args = parser.parse_args(argv)
     command = args.command or "run"
@@ -57,9 +70,65 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if command == "doctor":
         return run_doctor(settings)
+    if command == "eval":
+        return run_eval(settings, args.fixture, args.gold)
 
     parser.print_help()
     return 2
+
+
+def run_eval(settings: AppSettings, fixture: str, gold: str) -> int:
+    """Index a fixture corpus into a throwaway store and score retrieval quality."""
+    import tempfile
+
+    from verilume.core.embeddings import EmbeddingService
+    from verilume.core.eval import evaluate_retrieval, load_gold_questions
+    from verilume.core.retrieval import ChromaRetriever
+
+    fixture_dir = Path(fixture).expanduser()
+    gold_path = Path(gold).expanduser() if gold else fixture_dir / "gold_questions.json"
+    if not fixture_dir.is_dir():
+        print(json.dumps({"error": f"Fixture directory not found: {fixture_dir}"}))
+        return 2
+    if not gold_path.is_file():
+        print(json.dumps({"error": f"Gold questions file not found: {gold_path}"}))
+        return 2
+
+    with tempfile.TemporaryDirectory(prefix="verilume-eval-") as tmp:
+        tmp_path = Path(tmp)
+        eval_settings = settings.with_overrides(
+            docs_dir=fixture_dir,
+            chroma_dir=tmp_path / "chroma",
+            manifest_path=tmp_path / "manifest.json",
+            formula_store_path=tmp_path / "formulas.sqlite",
+            ocr_block_store_path=tmp_path / "ocr.sqlite",
+            structured_document_store_path=tmp_path / "structured.sqlite",
+            table_store_dir=tmp_path / "tables",
+            reset_db=True,
+        )
+        DocumentIngestor(eval_settings).ingest(reset=True)
+        embeddings = EmbeddingService(
+            eval_settings.embed_model,
+            eval_settings.embed_device,
+            cache_dir=eval_settings.embedding_cache_dir,
+            cache_enabled=eval_settings.embedding_cache_enabled,
+        )
+        retriever = ChromaRetriever(
+            eval_settings.chroma_dir,
+            eval_settings.collection_name,
+            embeddings,
+            settings=eval_settings,
+        )
+        try:
+            report = evaluate_retrieval(
+                lambda query, k: retriever.search(query, k=k),
+                load_gold_questions(gold_path),
+            )
+        finally:
+            retriever.close(clear_system_cache=True)
+
+    print(json.dumps(report.to_dict(), indent=2, default=str))
+    return 0
 
 
 def run_streamlit() -> int:

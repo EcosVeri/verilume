@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from verilume.core.schemas import LocalSource, RAGResponse, WebSource
 from verilume.settings import AppSettings
 from verilume.ui.chat import (
+    _GEN_STATE_KEY,
+    ASSISTANT_ICON,
     _answer_origin,
     _chat_placeholder,
     _consume_pending_prompt,
@@ -18,12 +22,14 @@ from verilume.ui.chat import (
     _group_web_source_rows,
     _history_bucket,
     _partition_message_history,
+    _poll_generation_impl,
     _render_benchmark_report,
     _render_message_history,
     _render_sources,
     _recommendation_for_response,
     _regeneration_plan,
     _source_strength_rows,
+    _start_generation,
     _supporting_source_count,
 )
 from verilume.utils.exporting import chat_to_markdown
@@ -35,6 +41,22 @@ class DummyContext:
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
         return False
+
+
+class FakeSessionState(dict):
+    """Minimal stand-in for st.session_state supporting dict AND attribute access."""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        del self[name]
 
 
 class ChatInteractionTests(unittest.TestCase):
@@ -584,3 +606,269 @@ class ChatInteractionTests(unittest.TestCase):
         self.assertEqual(expander.call_count, 1)
         markdown.assert_any_call("**Full answer**")
         markdown.assert_any_call("Full answer [S1]")
+
+
+class BackgroundGenerationTests(unittest.TestCase):
+    """Covers the threaded Stop/Regenerate plumbing in _start_generation/_poll_generation_impl."""
+
+    def test_start_generation_spawns_thread_and_populates_session_state(self) -> None:
+        fake_response = SimpleNamespace(answer="The answer", conversation_state=None)
+        fake_service = SimpleNamespace(ask=lambda *args, **kwargs: fake_response)
+        state = FakeSessionState(
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+            conversation_state=SimpleNamespace(),
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.get_rag_service", return_value=fake_service),
+        ):
+            _start_generation(settings, "Q")
+            gen = state[_GEN_STATE_KEY]
+            gen["thread"].join(timeout=2)
+
+        self.assertTrue(state.generating)
+        self.assertFalse(state.stop_requested)
+        self.assertEqual(gen["prompt"], "Q")
+        self.assertIsInstance(gen["stop_event"], threading.Event)
+        self.assertTrue(gen["result"]["done"])
+        self.assertIs(gen["result"]["response"], fake_response)
+
+    def test_start_generation_records_error_from_worker_exception(self) -> None:
+        def boom(*_args, **_kwargs) -> None:
+            raise ValueError("bad payload")
+
+        fake_service = SimpleNamespace(ask=boom)
+        state = FakeSessionState(
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+            conversation_state=SimpleNamespace(),
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.get_rag_service", return_value=fake_service),
+        ):
+            _start_generation(settings, "Q")
+            gen = state[_GEN_STATE_KEY]
+            gen["thread"].join(timeout=2)
+
+        self.assertTrue(gen["result"]["done"])
+        self.assertIn("unexpected response", gen["result"]["error"])
+
+    def test_poll_generation_impl_shows_exactly_one_progress_card_while_running(self) -> None:
+        result_box = {"done": False, "stage": "Searching local evidence..."}
+        state = FakeSessionState(
+            {
+                _GEN_STATE_KEY: {
+                    "thread": SimpleNamespace(),
+                    "stop_event": threading.Event(),
+                    "result": result_box,
+                    "prompt": "Q",
+                }
+            },
+            stop_requested=False,
+            generating=True,
+            messages=[],
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.st.columns", return_value=[DummyContext(), DummyContext()]),
+            patch("verilume.ui.chat.st.button", return_value=False),
+            patch("verilume.ui.chat.st.chat_message", return_value=DummyContext()) as chat_message,
+            patch("verilume.ui.chat.st.markdown") as markdown,
+        ):
+            _poll_generation_impl(settings)
+
+        chat_message.assert_called_once_with("assistant", avatar=ASSISTANT_ICON)
+        markdown.assert_called_once()
+        self.assertIn(_GEN_STATE_KEY, state)
+        self.assertEqual(state.messages, [])
+
+    def test_poll_generation_impl_stop_request_finalizes_immediately_while_worker_runs(
+        self,
+    ) -> None:
+        # The worker is still running (done=False) and blocked in a network call.
+        # A toolbar stop_requested must finalize NOW without waiting for the worker.
+        stop_event = threading.Event()
+        result_box = {"done": False, "stage": "Searching web evidence..."}
+        state = FakeSessionState(
+            {
+                _GEN_STATE_KEY: {
+                    "thread": SimpleNamespace(),
+                    "stop_event": stop_event,
+                    "result": result_box,
+                    "prompt": "Q",
+                }
+            },
+            stop_requested=True,
+            generating=True,
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.st.columns", return_value=[DummyContext(), DummyContext()]),
+            patch("verilume.ui.chat.st.button", return_value=False),
+            patch("verilume.ui.chat.st.chat_message", return_value=DummyContext()),
+            patch("verilume.ui.chat.st.markdown"),
+            patch("verilume.ui.chat._render_assistant_meta"),
+            patch("verilume.ui.chat.st.rerun") as rerun,
+        ):
+            _poll_generation_impl(settings)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertFalse(state.generating)
+        self.assertFalse(state.stop_requested)
+        self.assertNotIn(_GEN_STATE_KEY, state)
+        self.assertEqual(state.messages[-1]["content"], "Generation stopped by user.")
+        rerun.assert_called_once()
+
+    def test_poll_generation_impl_stop_button_in_fragment_finalizes_immediately(self) -> None:
+        stop_event = threading.Event()
+        result_box = {"done": False, "stage": "Interpreting question..."}
+        state = FakeSessionState(
+            {
+                _GEN_STATE_KEY: {
+                    "thread": SimpleNamespace(),
+                    "stop_event": stop_event,
+                    "result": result_box,
+                    "prompt": "Q",
+                }
+            },
+            stop_requested=False,
+            generating=True,
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+        )
+        settings = AppSettings()
+
+        # Simulate user clicking the in-fragment Stop button (st.button returns True).
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.st.columns", return_value=[DummyContext(), DummyContext()]),
+            patch("verilume.ui.chat.st.button", return_value=True),
+            patch("verilume.ui.chat.st.chat_message", return_value=DummyContext()),
+            patch("verilume.ui.chat.st.markdown"),
+            patch("verilume.ui.chat._render_assistant_meta"),
+            patch("verilume.ui.chat.st.rerun") as rerun,
+        ):
+            _poll_generation_impl(settings)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertNotIn(_GEN_STATE_KEY, state)
+        self.assertEqual(state.messages[-1]["content"], "Generation stopped by user.")
+        rerun.assert_called_once()
+
+    def test_poll_generation_impl_finalizes_stopped_generation(self) -> None:
+        result_box = {"done": True, "stopped": True}
+        state = FakeSessionState(
+            {
+                _GEN_STATE_KEY: {
+                    "thread": SimpleNamespace(),
+                    "stop_event": threading.Event(),
+                    "result": result_box,
+                    "prompt": "Q",
+                }
+            },
+            stop_requested=True,
+            generating=True,
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.st.chat_message", return_value=DummyContext()),
+            patch("verilume.ui.chat.st.markdown"),
+            patch("verilume.ui.chat._render_assistant_meta") as render_meta,
+            patch("verilume.ui.chat.st.rerun") as rerun,
+        ):
+            _poll_generation_impl(settings)
+
+        self.assertFalse(state.generating)
+        self.assertFalse(state.stop_requested)
+        self.assertNotIn(_GEN_STATE_KEY, state)
+        self.assertEqual(len(state.messages), 2)
+        self.assertEqual(state.messages[-1]["content"], "Generation stopped by user.")
+        render_meta.assert_called_once()
+        rerun.assert_called_once()
+
+    def test_poll_generation_impl_finalizes_error_generation(self) -> None:
+        result_box = {"done": True, "error": "Something went wrong generating the answer."}
+        state = FakeSessionState(
+            {
+                _GEN_STATE_KEY: {
+                    "thread": SimpleNamespace(),
+                    "stop_event": threading.Event(),
+                    "result": result_box,
+                    "prompt": "Q",
+                }
+            },
+            stop_requested=False,
+            generating=True,
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.st.chat_message", return_value=DummyContext()),
+            patch("verilume.ui.chat.st.warning") as warning,
+            patch("verilume.ui.chat._render_assistant_meta") as render_meta,
+            patch("verilume.ui.chat.st.rerun") as rerun,
+        ):
+            _poll_generation_impl(settings)
+
+        self.assertNotIn(_GEN_STATE_KEY, state)
+        self.assertEqual(len(state.messages), 2)
+        self.assertEqual(
+            state.messages[-1]["content"], "Something went wrong generating the answer."
+        )
+        warning.assert_called_once()
+        render_meta.assert_called_once()
+        rerun.assert_called_once()
+
+    def test_poll_generation_impl_finalizes_successful_generation(self) -> None:
+        response = SimpleNamespace(answer="The answer", conversation_state="new-state")
+        result_box = {"done": True, "response": response}
+        state = FakeSessionState(
+            {
+                _GEN_STATE_KEY: {
+                    "thread": SimpleNamespace(),
+                    "stop_event": threading.Event(),
+                    "result": result_box,
+                    "prompt": "Q",
+                }
+            },
+            stop_requested=False,
+            generating=True,
+            messages=[{"role": "user", "content": "Q", "timestamp": "t"}],
+            conversation_state=None,
+        )
+        settings = AppSettings()
+
+        with (
+            patch("verilume.ui.chat.st.session_state", state),
+            patch("verilume.ui.chat.st.chat_message", return_value=DummyContext()),
+            patch("verilume.ui.chat._render_assistant_meta") as render_meta,
+            patch("verilume.ui.chat._render_answer") as render_answer,
+            patch("verilume.ui.chat._render_sources") as render_sources,
+            patch("verilume.ui.chat._trim_history") as trim_history,
+            patch("verilume.ui.chat.st.rerun") as rerun,
+        ):
+            _poll_generation_impl(settings)
+
+        self.assertFalse(state.generating)
+        self.assertNotIn(_GEN_STATE_KEY, state)
+        self.assertEqual(state.conversation_state, "new-state")
+        self.assertEqual(len(state.messages), 2)
+        self.assertEqual(state.messages[-1]["content"], "The answer")
+        render_meta.assert_called_once()
+        render_answer.assert_called_once()
+        render_sources.assert_called_once()
+        trim_history.assert_called_once_with(settings.max_chat_messages)
+        rerun.assert_called_once()

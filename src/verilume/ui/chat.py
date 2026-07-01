@@ -7,11 +7,11 @@ import logging
 import random
 import re
 import threading
-import time
 from datetime import datetime, timedelta
 from html import escape
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -157,15 +157,32 @@ def _start_generation(settings: AppSettings, prompt: str) -> None:
     history = _history_from_messages(st.session_state.messages[:-1])
     conv_state = st.session_state.conversation_state
     stop_event = threading.Event()
-    result_box: dict[str, Any] = {"done": False, "stage": "Searching local evidence..."}
+    # Capture the bound predicate once so its identity is stable: the worker's
+    # cleanup must only clear the shared stop hook if it is still *this* request's
+    # hook (a newer generation may have replaced it while we were abandoned).
+    stop_fn = stop_event.is_set
+    request_id = uuid4().hex
+    result_box: dict[str, Any] = {
+        "done": False,
+        "stage": "Searching local evidence...",
+        "request_id": request_id,
+    }
+
+    # Give the generator direct access to the stop signal so it can abort
+    # in-flight Ollama streaming calls between tokens instead of blocking
+    # for the full response before the next cooperative checkpoint fires.
+    service = get_rag_service(settings)
+    _generator = getattr(service, "generator", None)
+    if _generator is not None and hasattr(_generator, "_should_stop"):
+        _generator._should_stop = stop_fn
 
     def worker() -> None:
         try:
-            resp = get_rag_service(settings).ask(
+            resp = service.ask(
                 prompt,
                 history,
                 conversation_state=conv_state,
-                should_stop=stop_event.is_set,
+                should_stop=stop_fn,
                 on_stage=lambda label: result_box.update({"stage": label}),
             )
             result_box["response"] = resp
@@ -193,6 +210,11 @@ def _start_generation(settings: AppSettings, prompt: str) -> None:
             )
         finally:
             result_box["done"] = True
+            # Only clear the shared stop hook if it is still ours. If the user
+            # stopped this request and started a new one, that newer generation
+            # already installed its own predicate and must not be clobbered.
+            if _generator is not None and getattr(_generator, "_should_stop", None) is stop_fn:
+                _generator._should_stop = None
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -201,13 +223,26 @@ def _start_generation(settings: AppSettings, prompt: str) -> None:
         "stop_event": stop_event,
         "result": result_box,
         "prompt": prompt,
+        "request_id": request_id,
     }
     st.session_state.generating = True
     st.session_state.stop_requested = False
 
 
+@st.fragment(run_every=0.4)
 def _poll_generation(settings: AppSettings) -> None:
-    """Show progress or render the finished result; schedule a rerun if still running."""
+    """Fragment wrapper: only this subtree re-renders on each 0.4s tick.
+
+    A full st.rerun() loop here would re-execute the whole script every tick
+    and could leave a stale chat_message block visible alongside the freshly
+    rendered one. The actual logic lives in _poll_generation_impl so it can be
+    unit-tested without a live Streamlit script context (fragments no-op when
+    called outside one).
+    """
+    _poll_generation_impl(settings)
+
+
+def _poll_generation_impl(settings: AppSettings) -> None:
     gen = st.session_state.get(_GEN_STATE_KEY)
     if gen is None:
         return
@@ -215,18 +250,28 @@ def _poll_generation(settings: AppSettings) -> None:
     result_box: dict[str, Any] = gen["result"]
     stop_event: threading.Event = gen["stop_event"]
 
-    # Forward a pending stop request to the worker thread immediately.
-    if st.session_state.stop_requested:
-        stop_event.set()
-
     if not result_box["done"]:
+        # Stop button is inside the fragment: clicking triggers a fragment-scoped rerun
+        # (Streamlit's guaranteed-immediate path), so the stop fires without any race
+        # against the main-script rerun scheduler.
+        _, col_stop = st.columns([6, 1])
+        with col_stop:
+            stop_clicked = st.button("⏹ Stop", key="_gen_stop", use_container_width=True)
+        # A stop can arrive from the toolbar (stop_requested) or the in-fragment
+        # button. Either way, signal the worker AND finalize the UI right now —
+        # do not wait for result_box["done"]. The background thread may still be
+        # blocked inside a non-cooperative network/model call; that abandoned
+        # worker winds itself down on its own cooperative checkpoints, and its
+        # late result is discarded because we drop the generation handle here.
+        if stop_clicked or st.session_state.stop_requested:
+            stop_event.set()
+            _finalize_stopped_generation()
+            return
         with st.chat_message("assistant", avatar=ASSISTANT_ICON):
             st.markdown(
                 _loading_stage_html(result_box.get("stage", "Searching local evidence...")),
                 unsafe_allow_html=True,
             )
-        time.sleep(0.4)
-        st.rerun()
         return
 
     # Generation finished — clean up state flags.
@@ -263,6 +308,32 @@ def _poll_generation(settings: AppSettings) -> None:
             st.session_state.messages.append(assistant_message)
             _trim_history(settings.max_chat_messages)
 
+    # Exit fragment-only rerun scope so the toolbar (Stop/Regenerate enablement)
+    # and message history settle into their normal, non-generating state.
+    st.rerun()
+
+
+def _finalize_stopped_generation() -> None:
+    """Drop the active generation handle and record a stopped message now.
+
+    Called the instant a stop is requested, without waiting for the worker to
+    observe its cooperative checkpoint. Dropping ``_GEN_STATE_KEY`` means the
+    worker's eventual result (success or otherwise) is never read or rendered,
+    so no stale answer can appear after the user has stopped.
+    """
+    st.session_state.generating = False
+    st.session_state.stop_requested = False
+    if _GEN_STATE_KEY in st.session_state:
+        del st.session_state[_GEN_STATE_KEY]
+
+    message = "Generation stopped by user."
+    msg_dict = {"role": "assistant", "content": message, "timestamp": _now_timestamp()}
+    with st.chat_message("assistant", avatar=ASSISTANT_ICON):
+        _render_assistant_meta(msg_dict, len(st.session_state.messages))
+        st.markdown(message)
+    st.session_state.messages.append(msg_dict)
+    st.rerun()
+
 
 @st.cache_data(show_spinner=False)
 def _cached_chat_pdf(messages: tuple[Any, ...], title: str) -> bytes | None:
@@ -278,13 +349,22 @@ def _render_toolbar(settings: AppSettings) -> None:
     can_regenerate = _latest_user_index(st.session_state.messages) is not None
     col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 1])
     with col_a:
+        # A second Stop entry point lives inside _poll_generation_impl (fragment-scoped)
+        # for the guaranteed-immediate path. This toolbar button is enabled only while a
+        # response is in flight; clicking it flags a stop and signals the active worker so
+        # the next fragment tick finalizes immediately.
         if st.button(
             "\u23f9 Stop",
+            key="_toolbar_stop",
             disabled=not st.session_state.generating,
             use_container_width=True,
             help="Stop the current response",
         ):
             st.session_state.stop_requested = True
+            gen = st.session_state.get(_GEN_STATE_KEY)
+            if gen is not None:
+                gen["stop_event"].set()
+            st.rerun()
     with col_b:
         if st.button(
             "\u21ba Regenerate",

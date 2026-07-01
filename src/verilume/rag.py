@@ -82,6 +82,7 @@ from verilume.core.generation import (
     LOCAL_UNKNOWN,
     MODEL_UNKNOWN,
     GenerationError,
+    GenerationStopped,
     create_generator,
     is_model_selection_warning,
 )
@@ -477,8 +478,6 @@ PUBLIC_DEFINITION_PREFIXES = (
 )
 
 
-class GenerationStopped(RuntimeError):
-    """Raised when the user stops multi-stage generation."""
 
 
 class DiagnosticsBuilder:
@@ -582,6 +581,9 @@ class VerilumeRAG:
             else None
         )
         self._response_cache: dict[tuple, tuple[float, RAGResponse]] = {}
+        # Set for the duration of a request so deep stages (web fan-out) can
+        # observe a user stop without threading the predicate through every call.
+        self._active_should_stop: Callable[[], bool] | None = None
 
     def close(self) -> None:
         self.retriever.close(clear_system_cache=True)
@@ -681,6 +683,8 @@ class VerilumeRAG:
                     should_stop,
                     on_stage,
                 )
+            except GenerationStopped:
+                raise
             except Exception as exc:
                 response = RAGResponse(
                     answer=f"{_benchmark_mode_label(mode)} could not complete: {_clean_error_message(exc)}",
@@ -860,6 +864,7 @@ class VerilumeRAG:
         on_stage: Callable[[str], None] | None = None,
     ) -> RAGResponse:
         _check_generation_stop(should_stop)
+        self._active_should_stop = should_stop
 
         original_question = question
         base_state = _merged_conversation_state_for_interpretation(
@@ -901,6 +906,7 @@ class VerilumeRAG:
             list(history),
             base_state,
         )
+        _check_generation_stop(should_stop)
         interpreted_state = apply_interpretation_to_state(base_state, interpretation)
         if interpretation.needs_clarification:
             diagnostics = (
@@ -1016,6 +1022,7 @@ class VerilumeRAG:
         ):
             _emit_stage(on_stage, "Rewriting query...")
             query = self.generator.rewrite_query(question, list(history))
+            _check_generation_stop(should_stop)
 
         time_sensitive = (
             query_understanding.requires_date_reconciliation
@@ -1322,6 +1329,7 @@ class VerilumeRAG:
                 diagnostics["generation_error_confidence"] = _generation_error_confidence(generation_error)
         diagnostics["local_answer_relevant"] = local_answer_relevant
         diagnostics["local_sufficient"] = local_sufficient
+        _check_generation_stop(should_stop)
 
         if identity_tokens and local_sources and strong_local and not local_sufficient and not current_or_web:
             _emit_stage(on_stage, "Preparing local identity evidence...")
@@ -1517,6 +1525,7 @@ class VerilumeRAG:
                     diagnostics["model_error"] = _clean_error_message(exc)
         elif not allow_model_knowledge:
             diagnostics["model_skipped_by_search_mode"] = True
+        _check_generation_stop(should_stop)
         if (
             not should_use_web
             and not local_sufficient
@@ -2332,6 +2341,7 @@ class VerilumeRAG:
         question: str = "",
         prefer_fast_public_search: bool = False,
     ) -> list[WebSource]:
+        _check_generation_stop(self._active_should_stop)
         collected: list[WebSource] = []
         errors: list[str] = []
         target = max(1, min(MAX_WEB_SOURCES_TO_SHOW, self.settings.web_search_max_results))
@@ -2396,6 +2406,10 @@ class VerilumeRAG:
                     for web_query in remaining_queries
                 }
                 for future in as_completed(futures):
+                    if self._active_should_stop and self._active_should_stop():
+                        for pending in futures:
+                            pending.cancel()
+                        _check_generation_stop(self._active_should_stop)
                     try:
                         collected = _merge_web_sources(
                             collected,
@@ -2442,6 +2456,7 @@ class VerilumeRAG:
                     if len(fallback_sources) >= MAX_WEB_SOURCES_TO_SHOW:
                         break
             collected = _merge_web_sources(collected, fallback_sources, limit=target * WEB_QUERY_FANOUT_LIMIT)
+        _check_generation_stop(self._active_should_stop)
         ranked = _rank_web_sources(collected, web_queries)
         if (
             self.settings.enable_aggressive_web_fallback

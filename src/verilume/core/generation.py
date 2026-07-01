@@ -8,8 +8,9 @@ Supports:
 from __future__ import annotations
 
 import json
+import threading
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import requests
 from huggingface_hub import InferenceClient
@@ -43,9 +44,19 @@ class GenerationError(RuntimeError):
     """Raised when a generation backend fails."""
 
 
+class GenerationStopped(RuntimeError):
+    """Raised when the user requests an early stop during generation."""
+
+
 def is_model_selection_warning(message: str) -> bool:
     lower = (message or "").lower()
     return any(marker in lower for marker in MODEL_SELECTION_ERROR_MARKERS)
+
+
+T = TypeVar("T")
+
+# How often a cancellable blocking call re-checks the stop signal, in seconds.
+_STOP_POLL_INTERVAL = 0.1
 
 
 class BaseGenerator(ABC):
@@ -53,6 +64,8 @@ class BaseGenerator(ABC):
 
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
+        # Set by the UI layer during an active generation so chat() can abort early.
+        self._should_stop: Callable[[], bool] | None = None
 
     @property
     def answer_style_profile(self) -> AnswerStyleProfile:
@@ -68,6 +81,38 @@ class BaseGenerator(ABC):
     @abstractmethod
     def chat(self, messages: list[dict[str, str]]) -> str:
         """Generate a response from chat messages."""
+
+    def _call_with_stop(self, func: Callable[[], T]) -> T:
+        """Run a blocking ``func`` so a user stop returns without waiting for it.
+
+        Backends like the Hugging Face inference client expose only a single
+        blocking request with no mid-flight cancellation. Running it on a daemon
+        thread and polling ``_should_stop`` lets the caller raise
+        :class:`GenerationStopped` the moment a stop is requested. The abandoned
+        request keeps running until the server responds, then its thread exits;
+        its result is simply discarded.
+        """
+        if not self._should_stop:
+            return func()
+
+        box: dict[str, Any] = {}
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                box["result"] = func()
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller thread
+                box["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        while not done.wait(_STOP_POLL_INTERVAL):
+            if self._should_stop and self._should_stop():
+                raise GenerationStopped("Generation stopped.")
+        if "error" in box:
+            raise box["error"]
+        return box["result"]
 
     def rewrite_query(
         self,
@@ -240,23 +285,27 @@ class HuggingFaceGenerator(BaseGenerator):
         )
 
     def chat(self, messages: list[dict[str, str]]) -> str:
+        if self._should_stop and self._should_stop():
+            raise GenerationStopped("Generation stopped.")
         if not self.settings.hf_token:
             raise GenerationError(
                 "Hugging Face token is missing. Add a valid token or switch to Ollama."
             )
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.settings.hf_llm_model,
-                messages=messages,
-                max_tokens=_style_max_tokens(
-                    self.settings.hf_max_new_tokens,
-                    self.answer_style_profile,
-                ),
-                temperature=_style_temperature(
-                    self.settings.hf_temperature,
-                    self.answer_style_profile,
-                ),
+            response = self._call_with_stop(
+                lambda: self.client.chat.completions.create(
+                    model=self.settings.hf_llm_model,
+                    messages=messages,
+                    max_tokens=_style_max_tokens(
+                        self.settings.hf_max_new_tokens,
+                        self.answer_style_profile,
+                    ),
+                    temperature=_style_temperature(
+                        self.settings.hf_temperature,
+                        self.answer_style_profile,
+                    ),
+                )
             )
 
             content = response.choices[0].message.content
@@ -266,6 +315,8 @@ class HuggingFaceGenerator(BaseGenerator):
 
             return str(content)
 
+        except GenerationStopped:
+            raise
         except Exception as exc:
             message = _clean_error(exc)
 
@@ -283,12 +334,15 @@ class OllamaGenerator(BaseGenerator):
     """Ollama local chat backend."""
 
     def chat(self, messages: list[dict[str, str]]) -> str:
+        if self._should_stop and self._should_stop():
+            raise GenerationStopped("Generation stopped.")
+
         url = self.settings.ollama_base_url.rstrip("/") + "/api/chat"
 
         payload = {
             "model": self.settings.ollama_model,
             "messages": messages,
-            "stream": False,
+            "stream": True,
             "options": {
                 "temperature": _style_temperature(
                     self.settings.ollama_temperature,
@@ -306,19 +360,34 @@ class OllamaGenerator(BaseGenerator):
                 url,
                 json=payload,
                 timeout=self.settings.ollama_timeout_seconds,
+                stream=True,
             )
             response.raise_for_status()
 
-            data = response.json()
-            message = data.get("message", {})
-            content = message.get("content", "")
+            content_parts: list[str] = []
+            for raw_line in response.iter_lines():
+                if self._should_stop and self._should_stop():
+                    response.close()
+                    raise GenerationStopped("Generation stopped mid-stream.")
+                if not raw_line:
+                    continue
+                chunk = json.loads(raw_line)
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    content_parts.append(token)
+                if chunk.get("done"):
+                    break
 
+            content = "".join(content_parts)
             if not content:
                 raise GenerationError(
                     "Ollama returned an empty response. Check that the selected model is installed."
                 )
 
-            return str(content)
+            return content
+
+        except GenerationStopped:
+            raise
 
         except requests.exceptions.ConnectionError as exc:
             raise GenerationError(

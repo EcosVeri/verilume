@@ -40,7 +40,8 @@ class DashboardTests(unittest.TestCase):
         ]
 
         def fake_button(label: str, **_: object) -> bool:
-            return label == "Summarise uploaded documents"
+            # Labels carry a display-only icon prefix; match the title suffix.
+            return label.endswith("Summarise uploaded documents")
 
         with (
             patch("verilume.ui.dashboard.st.session_state", session_state),

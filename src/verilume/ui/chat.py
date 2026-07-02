@@ -18,7 +18,7 @@ import streamlit.components.v1 as components
 
 from verilume.core.conversation_state import ConversationState
 from verilume.core.schemas import ChatMessage, RAGResponse
-from verilume.rag import GenerationStopped, get_rag_service
+from verilume.rag import GenerationStopped, _claims_entirely_unverified, get_rag_service
 from verilume.settings import AppSettings
 from verilume.utils.exporting import chat_to_markdown, chat_to_pdf
 from verilume.utils.formatting import (
@@ -26,6 +26,7 @@ from verilume.utils.formatting import (
     local_source_rows,
     source_badge,
     source_confidence,
+    source_quality_stars,
     web_source_rows,
 )
 
@@ -37,7 +38,7 @@ HISTORY_BUCKETS = ("Today", "Yesterday", "Earlier")
 # Neutral Material avatars keep the chat focused and avoid loud emoji badges.
 USER_ICON = ":material/account_circle:"
 ASSISTANT_ICON = ":material/auto_awesome:"
-ANSWER_HEADER = "Verilume Findings"
+ANSWER_HEADER = "Verified Findings"
 EVIDENCE_HEADER = "Evidence Analysis"
 LOCAL_SOURCES_HEADER = "📄 Local"
 WEB_SOURCES_HEADER = "🌍 Web"
@@ -98,9 +99,12 @@ def render_chat(
     init_chat_state()
 
     regenerate_prompt = None
+    regenerate_focus = None
     if st.session_state.regenerate_requested:
         st.session_state.regenerate_requested = False
-        regenerate_prompt, st.session_state.messages = _regeneration_plan(st.session_state.messages)
+        regenerate_prompt, regenerate_focus, st.session_state.messages = _regeneration_plan(
+            st.session_state.messages
+        )
 
     _render_toolbar(settings)
     _render_message_history(settings)
@@ -111,7 +115,7 @@ def render_chat(
         return
 
     if regenerate_prompt:
-        _start_generation(settings, regenerate_prompt)
+        _start_generation(settings, regenerate_prompt, focus_document=regenerate_focus)
         _poll_generation(settings)
         return
 
@@ -119,17 +123,25 @@ def render_chat(
         _render_welcome_screen()
 
     manual_prompt = st.chat_input(_chat_placeholder(settings))
-    prompt = _consume_pending_prompt() or manual_prompt
+    pending_prompt, focus_document = _consume_pending_prompt()
+    prompt = pending_prompt or manual_prompt
     if not prompt:
         return
+    if not pending_prompt:
+        focus_document = None
 
-    st.session_state.messages.append(
-        {"role": "user", "content": prompt, "timestamp": _now_timestamp()}
-    )
+    user_message: dict[str, Any] = {
+        "role": "user",
+        "content": prompt,
+        "timestamp": _now_timestamp(),
+    }
+    if focus_document:
+        user_message["focus_document"] = focus_document
+    st.session_state.messages.append(user_message)
     with st.chat_message("user", avatar=USER_ICON):
         st.markdown(prompt)
 
-    _start_generation(settings, prompt)
+    _start_generation(settings, prompt, focus_document=focus_document)
     _poll_generation(settings)
 
 
@@ -144,15 +156,22 @@ def _chat_placeholder(settings: AppSettings) -> str:
     return f"{icon} {label}  {example}"
 
 
-def _consume_pending_prompt() -> str | None:
+def _consume_pending_prompt() -> tuple[str | None, str | None]:
+    """Pop the queued prompt plus the document it was derived from, if any."""
     prompt = st.session_state.pop("pending_prompt", None)
+    focus_document = st.session_state.pop("pending_prompt_document", None)
     if prompt is None:
-        return None
+        return None, None
     prompt_text = str(prompt).strip()
-    return prompt_text or None
+    if not prompt_text:
+        return None, None
+    focus_text = str(focus_document).strip() if focus_document else None
+    return prompt_text, focus_text or None
 
 
-def _start_generation(settings: AppSettings, prompt: str) -> None:
+def _start_generation(
+    settings: AppSettings, prompt: str, focus_document: str | None = None
+) -> None:
     """Kick off RAG in a background thread and store the handle in session state."""
     history = _history_from_messages(st.session_state.messages[:-1])
     conv_state = st.session_state.conversation_state
@@ -184,6 +203,7 @@ def _start_generation(settings: AppSettings, prompt: str) -> None:
                 conversation_state=conv_state,
                 should_stop=stop_fn,
                 on_stage=lambda label: result_box.update({"stage": label}),
+                focus_document=focus_document,
             )
             result_box["response"] = resp
         except GenerationStopped:
@@ -312,7 +332,7 @@ def _poll_generation_impl(settings: AppSettings) -> None:
                 st.session_state.conversation_state = response.conversation_state
             _render_assistant_meta(assistant_message, len(st.session_state.messages))
             _render_answer(response, f"live-{len(st.session_state.messages)}")
-            _render_sources(response, settings)
+            _render_sources(response, settings, key_prefix=f"live-{len(st.session_state.messages)}")
             st.session_state.messages.append(assistant_message)
             _trim_history(settings.max_chat_messages)
 
@@ -443,7 +463,7 @@ def _render_welcome_screen() -> None:
 
 def _loading_stage_html(label: str) -> str:
     current = _loading_stage_index(label)
-    steps = ("Searching Local", "Searching Web", "Ranking", "Generating")
+    steps = ("Searching Local", "Searching Web", "Ranking", "Verifying", "Writing")
     rendered_steps = "".join(
         (
             f'<div class="veri-loading-step {"active" if index == current else "done" if index < current else ""}">'
@@ -464,10 +484,17 @@ def _loading_stage_index(label: str) -> int:
     normalized = (label or "").lower()
     if "web" in normalized:
         return 1
-    if "rank" in normalized or "evidence" in normalized or "verif" in normalized:
+    if "rank" in normalized:
         return 2
-    if "generat" in normalized or "synthesis" in normalized or "answer" in normalized:
+    if "verif" in normalized or "evidence" in normalized:
         return 3
+    if (
+        "generat" in normalized
+        or "synthesis" in normalized
+        or "answer" in normalized
+        or "writ" in normalized
+    ):
+        return 4
     return 0
 
 
@@ -485,7 +512,7 @@ def _render_message(
         response = message.get("response")
         if isinstance(response, RAGResponse):
             _render_answer(response, f"history-{index}")
-            _render_sources(response, settings, display=source_display)
+            _render_sources(response, settings, display=source_display, key_prefix=f"history-{index}")
         else:
             st.markdown(str(message.get("content", "")))
 
@@ -493,24 +520,33 @@ def _render_message(
 def _render_answer(response: RAGResponse, key_prefix: str) -> None:
     recommendation = _recommendation_for_response(response, key_prefix)
     if recommendation is None:
-        st.markdown(_display_answer(response))
+        # Keyed container emits an `.st-key-...` wrapper class so the answer
+        # body can be visually enlarged (see .veri-answer-body in styles.py)
+        # without affecting the smaller evidence/diagnostic text below it.
+        with st.container(key=f"veri-answer-body-{key_prefix}"):
+            st.markdown(_display_answer(response))
         _render_evidence_summary(response)
         return
     _render_recommendation(**recommendation)
 
 
 def _render_sources(
-    response: RAGResponse, settings: AppSettings, display: str = "expander"
+    response: RAGResponse,
+    settings: AppSettings,
+    display: str = "expander",
+    key_prefix: str = "src",
 ) -> None:
     if display == "inline":
         _render_sources_inline(response, settings)
         return
-    _render_sources_expanded(response, settings)
+    _render_sources_expanded(response, settings, key_prefix)
 
 
-def _render_sources_expanded(response: RAGResponse, settings: AppSettings) -> None:
+def _render_sources_expanded(
+    response: RAGResponse, settings: AppSettings, key_prefix: str = "src"
+) -> None:
     _render_evidence_details(response)
-    _render_benchmark_report(response)
+    _render_benchmark_report(response, key_prefix)
     _render_evidence_comparison(response)
     _render_specialized_evidence_panels(response)
     if settings.show_local_sources and response.local_sources:
@@ -562,7 +598,7 @@ def _render_evidence_summary(response: RAGResponse) -> None:
     diagnostics = response.diagnostics or {}
     source_count = _supporting_source_count(response)
     source_count_label = _supporting_source_count_label(source_count)
-    badges = [origin, f"Confidence: {confidence}", source_type]
+    badges = [origin, f"{_confidence_dot(confidence)} Confidence: {confidence}", source_type]
     if source_count_label:
         badges.append(source_count_label)
     badges.extend(_evidence_badges(response)[1:])
@@ -571,11 +607,17 @@ def _render_evidence_summary(response: RAGResponse) -> None:
     rendered_strength = "".join(
         (
             '<div class="veri-source-strength-row">'
-            f'<span class="veri-source-strength-label">{escape(label)}</span>'
+            '<div class="veri-source-strength-head">'
+            f'<span class="veri-source-strength-label">{escape(label.upper())} SUPPORT</span>'
+            f'<span class="veri-source-strength-grade veri-source-strength-grade-{kind}">'
+            f"{escape(_strength_grade(score))}</span>"
+            "</div>"
+            '<div class="veri-source-strength-meter">'
             '<span class="veri-source-strength-track">'
             f'<span class="veri-source-strength-fill veri-source-strength-{kind}" style="width:{score}%"></span>'
             "</span>"
             f'<span class="veri-source-strength-value">{score}%</span>'
+            "</div>"
             "</div>"
         )
         for label, score, kind in strength_rows
@@ -603,16 +645,16 @@ def _render_evidence_summary(response: RAGResponse) -> None:
     summary_rows = "".join(
         (
             '<div class="veri-evidence-summary-row">'
-            f'<span>{escape(label)}</span>'
+            f'<span>{escape(icon)} {escape(label)}</span>'
             f'<strong>{escape(value)}</strong>'
             "</div>"
         )
-        for label, value in (
-            ("Search mode", search_mode),
-            ("Sources searched", searched),
-            ("Sources used", used),
-            ("Winner", winner),
-            ("Claim support", claim_support),
+        for icon, label, value in (
+            ("🔎", "Search mode", search_mode),
+            ("📚", "Sources searched", searched),
+            ("✅", "Sources used", used),
+            ("🏆", "Winner", winner),
+            ("🤝", "Claim support", claim_support),
         )
         if value
     )
@@ -629,6 +671,25 @@ def _render_evidence_summary(response: RAGResponse) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _strength_grade(score: int) -> str:
+    if score >= 75:
+        return "High"
+    if score >= 50:
+        return "Medium"
+    return "Low"
+
+
+def _confidence_dot(confidence: str) -> str:
+    level = str(confidence or "").strip().lower()
+    if level.startswith("high"):
+        return "🟢"
+    if level.startswith("med"):
+        return "🟡"
+    if level.startswith("low"):
+        return "🔴"
+    return "⚪"
 
 
 def _winner_reasons(diagnostics: dict[str, Any]) -> tuple[str, list[str]]:
@@ -703,13 +764,87 @@ def _summary_value_list(value: Any) -> list[str]:
 
 
 def _render_evidence_details(response: RAGResponse) -> None:
-    rows = _evidence_detail_rows(response)
-    if not rows:
+    curated = _curated_evidence_html(response)
+    debug_rows = _evidence_detail_rows(response)
+    if not curated and not debug_rows:
         return
 
-    with st.expander(EVIDENCE_HEADER, expanded=False):
-        for label, value in rows:
-            st.markdown(f"**{label}:** {value}")
+    if curated:
+        with st.expander(EVIDENCE_HEADER, expanded=False):
+            st.markdown(curated, unsafe_allow_html=True)
+    # Sibling (not nested) expander — Streamlit forbids expanders inside
+    # expanders — keeps the raw diagnostics available on demand without
+    # cluttering the reader-facing Evidence Analysis card.
+    if debug_rows:
+        with st.expander("Debug details", expanded=False):
+            for label, value in debug_rows:
+                st.markdown(f"**{label}:** {value}")
+
+
+def _curated_evidence_html(response: RAGResponse) -> str:
+    """Reader-facing Evidence Analysis: verification, agreement, freshness, knowledge."""
+    diagnostics = response.diagnostics or {}
+    cards: list[tuple[str, str]] = []
+    verification = _verification_display(diagnostics)
+    if verification:
+        cards.append(("Verification", verification))
+    agreement = str(diagnostics.get("source_agreement") or "").strip()
+    if agreement:
+        cards.append(("Agreement", agreement.title()))
+    cards.append(("Freshness", _freshness_display(diagnostics)))
+    rendered_cards = "".join(
+        (
+            '<div class="veri-evidence-summary-row">'
+            f"<span>{escape(label)}</span><strong>{escape(value)}</strong></div>"
+        )
+        for label, value in cards
+        if value
+    )
+    used_local, used_model, used_web = _response_evidence_usage(response)
+    knowledge = (("Local", used_local), ("AI", used_model), ("Web", used_web))
+    chips = "".join(
+        (
+            f'<span class="veri-knowledge-chip {"on" if on else "off"}">'
+            f'{"✓" if on else "✗"} {escape(name)}</span>'
+        )
+        for name, on in knowledge
+    )
+    if not rendered_cards and not chips:
+        return ""
+    knowledge_block = (
+        '<div class="veri-knowledge-used">'
+        '<span class="veri-knowledge-label">Knowledge used</span>'
+        f'<div class="veri-knowledge-chips">{chips}</div>'
+        "</div>"
+    )
+    return (
+        f'<div class="veri-evidence-summary-rows veri-evidence-analysis-grid">{rendered_cards}</div>'
+        f"{knowledge_block}"
+    )
+
+
+def _verification_display(diagnostics: dict[str, Any]) -> str:
+    status = str(diagnostics.get("answer_verification_status") or "").strip()
+    if not status:
+        return ""
+    friendly = _friendly_token(status)
+    low = status.lower()
+    if any(marker in low for marker in ("verified", "supported", "pass", "grounded")):
+        return f"✓ {friendly}"
+    if any(marker in low for marker in ("fail", "unsupported", "unverified", "error")):
+        return f"⚠ {friendly}"
+    return friendly
+
+
+def _freshness_display(diagnostics: dict[str, Any]) -> str:
+    if diagnostics.get("local_is_older_than_web") is True:
+        return "Newer web available"
+    if diagnostics.get("requires_date_reconciliation") is True:
+        return "Checked"
+    note = str(diagnostics.get("freshness_note") or "").strip()
+    if note:
+        return _friendly_token(note)
+    return "Current"
 
 
 def _render_evidence_details_inline(response: RAGResponse) -> None:
@@ -741,11 +876,39 @@ def _render_evidence_comparison(response: RAGResponse) -> None:
             st.caption(f"Decision: {decision} Winner: {_friendly_token(winner)}.{suffix}")
 
 
-def _render_benchmark_report(response: RAGResponse) -> None:
+def _render_benchmark_report(response: RAGResponse, key_prefix: str = "src") -> None:
     report = _benchmark_report(response)
-    if not report:
+    if not report or not _benchmark_rows(report):
         return
 
+    results = [r for r in report.get("results", []) if isinstance(r, dict)]
+    best_label = _benchmark_display_label(
+        str(report.get("best_mode_label") or report.get("best_mode") or "")
+    )
+    caption = f"{len(results)} modes compared"
+    if best_label:
+        caption += f" · best: {best_label}"
+    st.markdown(
+        f'<div class="veri-benchmark-teaser">📊 Benchmark — {escape(caption)}</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button(
+        "📊 View Benchmark Report",
+        key=f"bench-{key_prefix}",
+        use_container_width=True,
+        help="Compare Local, AI, Web, and Full retrieval modes",
+    ):
+        try:
+            _benchmark_dialog(report)
+        except Exception:
+            # Dialogs are disallowed in a few nested contexts; if so, fall back
+            # to inline rendering so the report is never lost.
+            LOGGER.debug("Benchmark dialog unavailable; rendering inline.", exc_info=True)
+            with st.expander("Benchmark Results", expanded=True):
+                _render_benchmark_body(report)
+
+
+def _benchmark_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for result in report.get("results", []):
         if not isinstance(result, dict):
@@ -766,29 +929,38 @@ def _render_benchmark_report(response: RAGResponse) -> None:
                 ),
             }
         )
-    if not rows:
-        return
+    return rows
 
-    with st.expander("Benchmark Results", expanded=True):
-        table_height = min(260, 44 + (len(rows) + 1) * 36)
-        st.dataframe(
-            rows,
-            use_container_width=True,
-            hide_index=True,
-            height=table_height,
-        )
-        best_label = _benchmark_display_label(
-            str(report.get("best_mode_label") or report.get("best_mode") or "")
-        )
-        if best_label:
-            st.caption(f"Best mode: {best_label}")
-        for result in report.get("results", []):
-            if not isinstance(result, dict):
-                continue
-            mode = _benchmark_display_label(str(result.get("mode") or ""))
-            answer = str(result.get("answer") or "").strip()
-            st.markdown(f"**{mode} answer**")
-            st.markdown(answer or "_No answer returned._")
+
+@st.dialog("Benchmark Report", width="large")
+def _benchmark_dialog(report: dict[str, Any]) -> None:
+    _render_benchmark_body(report)
+
+
+def _render_benchmark_body(report: dict[str, Any]) -> None:
+    rows = _benchmark_rows(report)
+    if not rows:
+        st.caption("No benchmark results available.")
+        return
+    table_height = min(260, 44 + (len(rows) + 1) * 36)
+    st.dataframe(
+        rows,
+        use_container_width=True,
+        hide_index=True,
+        height=table_height,
+    )
+    best_label = _benchmark_display_label(
+        str(report.get("best_mode_label") or report.get("best_mode") or "")
+    )
+    if best_label:
+        st.caption(f"Best mode: {best_label}")
+    for result in report.get("results", []):
+        if not isinstance(result, dict):
+            continue
+        mode = _benchmark_display_label(str(result.get("mode") or ""))
+        answer = str(result.get("answer") or "").strip()
+        st.markdown(f"**{mode} answer**")
+        st.markdown(answer or "_No answer returned._")
 
 
 def _render_benchmark_report_inline(response: RAGResponse) -> None:
@@ -907,6 +1079,7 @@ def _evidence_detail_rows(response: RAGResponse) -> list[tuple[str, str]]:
     diagnostics = response.diagnostics or {}
     fields = (
         ("Evidence note", _friendly_evidence_note(diagnostics.get("evidence_note"))),
+        ("Focused document", diagnostics.get("focus_document")),
         ("Search mode", _summary_search_mode(diagnostics)),
         ("Sources searched", _summary_source_list(diagnostics.get("sources_searched"))),
         ("Sources used", _summary_source_list(diagnostics.get("sources_used"))),
@@ -1037,12 +1210,12 @@ def _source_value_line(text: str) -> str:
 
 def _render_local_sources_table(response: RAGResponse) -> None:
     cards = []
-    for row in local_source_rows(response.local_sources):
+    for rank, row in enumerate(local_source_rows(response.local_sources), start=1):
         cards.append(
             """
 <div class="veri-source-card">
   <div class="veri-source-card-top">
-    <div class="veri-source-card-title"><span>📄</span>{document}</div>
+    <div class="veri-source-card-title"><span class="veri-source-card-rank">{rank}</span>{document}</div>
     <div class="veri-source-card-badge">{citation}</div>
   </div>
   <div class="veri-source-card-meta">
@@ -1053,6 +1226,7 @@ def _render_local_sources_table(response: RAGResponse) -> None:
   <div class="veri-source-card-preview">{preview}</div>
 </div>
             """.format(
+                rank=rank,
                 citation=escape(str(row.get("Citation", ""))),
                 confidence=escape(str(row.get("Confidence", ""))),
                 document=escape(str(row.get("Document", ""))),
@@ -1068,11 +1242,13 @@ def _render_local_sources_table(response: RAGResponse) -> None:
 
 
 def _render_web_source_groups(response: RAGResponse) -> None:
-    for group_title, grouped_sources in _group_web_source_rows(
+    for group_title, source_type, grouped_sources in _group_web_source_rows(
         web_source_rows(response.web_sources)
     ):
+        stars = source_quality_stars(source_type)
         st.markdown(
-            f'<div class="veri-source-group-heading">{escape(group_title)}</div>',
+            f'<div class="veri-source-group-heading">{escape(group_title)}'
+            f'<span class="veri-source-stars" title="Source quality rating">{stars}</span></div>',
             unsafe_allow_html=True,
         )
         cards = []
@@ -1134,13 +1310,13 @@ def _web_source_card_html(
 
 def _group_web_source_rows(
     rows: list[dict[str, str | float | None]],
-) -> list[tuple[str, list[dict[str, str | float | None]]]]:
+) -> list[tuple[str, str, list[dict[str, str | float | None]]]]:
     grouped: dict[str, list[dict[str, str | float | None]]] = {}
     for row in rows:
         source_type = str(row.get("Source type") or "Web")
         grouped.setdefault(source_type, []).append(row)
     return [
-        (_web_source_group_title(source_type, group), group)
+        (_web_source_group_title(source_type, group), source_type, group)
         for source_type, group in grouped.items()
     ]
 
@@ -1169,6 +1345,44 @@ def _render_assistant_meta(message: dict[str, Any], index: int) -> None:
     timestamp = _format_timestamp(message.get("timestamp"))
     if timestamp:
         st.markdown(f'<div class="veri-answer-timestamp">{timestamp}</div>', unsafe_allow_html=True)
+    stats = _answer_stats_html(message.get("response"))
+    if stats:
+        st.markdown(stats, unsafe_allow_html=True)
+
+
+def _answer_stats_html(response: Any) -> str:
+    """Signature header row: time · sources · confidence, with a divider.
+
+    Only rendered from real response data; conversational/error messages that
+    carry no RAGResponse fall through to a plain body with no header chips.
+    """
+    if not isinstance(response, RAGResponse):
+        return ""
+    chips: list[str] = []
+    seconds = (response.diagnostics or {}).get("response_seconds")
+    try:
+        if seconds is not None and float(seconds) > 0:
+            chips.append(("", f"\U0001f552 {float(seconds):.1f}s"))
+    except (TypeError, ValueError):
+        pass
+    source_count = _supporting_source_count(response)
+    if source_count:
+        noun = "source" if source_count == 1 else "sources"
+        chips.append(("", f"\U0001f4da {source_count} {noun}"))
+    _, confidence, _ = _answer_origin(response)
+    if confidence and confidence != "N/A":
+        chips.append(("conf", f"{_confidence_dot(confidence)} {confidence} confidence"))
+    if not chips:
+        return ""
+    rendered = "".join(
+        f'<span class="veri-answer-stat-{cls}">{escape(text)}</span>' if cls
+        else f"<span>{escape(text)}</span>"
+        for cls, text in chips
+    )
+    return (
+        f'<div class="veri-answer-stats">{rendered}</div>'
+        '<hr class="veri-answer-divider"/>'
+    )
 
 
 def _render_answer_origin(response: RAGResponse) -> None:
@@ -1210,7 +1424,59 @@ def _friendly_evidence_note(value: Any) -> str:
     return text
 
 
+_CONFIDENCE_ORDER = ("Low", "Medium", "High")
+
+
 def _answer_origin(response: RAGResponse) -> tuple[str, str, str]:
+    origin, confidence, source_type = _answer_origin_raw(response)
+    return origin, _cap_display_confidence(confidence, response), source_type
+
+
+def _cap_display_confidence(confidence: str, response: RAGResponse) -> str:
+    """Never let source authority outrank the evidence signals.
+
+    A high-authority source (e.g. a government page) makes the raw confidence
+    "High" even when the answer contradicts newer evidence — this is exactly
+    how a stale answer ended up badged "High confidence". When the evidence
+    layer reports an unsupported answer or a freshness/source conflict, cap the
+    badge so it can never claim more certainty than the evidence supports.
+    """
+    if confidence not in _CONFIDENCE_ORDER:
+        return confidence
+    diagnostics = response.diagnostics or {}
+    ceiling = _CONFIDENCE_ORDER.index("High")
+
+    # Claim verification supported none of the answer's claims — the answer is
+    # entirely unverified, so the badge is Low regardless of source authority.
+    if _claims_entirely_unverified(diagnostics):
+        return "Low"
+
+    agreement = str(diagnostics.get("source_agreement") or "").lower()
+    # "unsupported" from the heuristic verifier is an uncertainty signal, not
+    # proof of error — it shares the Medium ceiling with evidence conflicts,
+    # mirroring the backend cap in rag._cap_confidence_with_evidence.
+    conflict = (
+        str(diagnostics.get("answer_verification_status") or "").lower() == "unsupported"
+        or diagnostics.get("local_is_older_than_web") is True
+        or diagnostics.get("evidence_conflict") is True
+        or "conflict" in agreement
+    )
+    time_sensitive = bool(
+        diagnostics.get("time_sensitive") or diagnostics.get("requires_date_reconciliation")
+    )
+    if conflict:
+        ceiling = min(ceiling, _CONFIDENCE_ORDER.index("Medium"))
+    elif time_sensitive and agreement in {"", "none", "single", "single_source"}:
+        # A lone source on a question whose answer changes over time does not
+        # justify High confidence.
+        ceiling = min(ceiling, _CONFIDENCE_ORDER.index("Medium"))
+
+    if _CONFIDENCE_ORDER.index(confidence) <= ceiling:
+        return confidence
+    return _CONFIDENCE_ORDER[ceiling]
+
+
+def _answer_origin_raw(response: RAGResponse) -> tuple[str, str, str]:
     used_local, used_model, used_web = _response_evidence_usage(response)
     if sum(1 for enabled in (used_local, used_model, used_web) if enabled) >= 2:
         return "\U0001f500 Hybrid", _hybrid_confidence(response, used_model=used_model), "Hybrid"
@@ -1405,8 +1671,11 @@ def _render_copy_answer_button(answer: str, index: int) -> None:
     Each iframe only carries the button markup and a tiny data-payload script.
     """
     button_id = f"veri-copy-{index}"
-    # Encode the answer as JSON so it is safe to embed in a <script> tag.
-    answer_json = json.dumps(answer)
+    # Encode the answer as JSON, then escape "</" so a "</script>" sequence in
+    # the answer (which can echo untrusted web content) cannot terminate the
+    # script block early and inject HTML into the component frame. json.dumps
+    # alone does NOT escape "</"; "<\/" is identical to "</" inside a JS string.
+    answer_json = json.dumps(answer).replace("</", "<\\/")
     html = f"""
 <style>
 html,body{{margin:0;background:transparent}}
@@ -1555,14 +1824,19 @@ def _trim_history(max_messages: int) -> None:
         st.session_state.messages = st.session_state.messages[-max_messages:]
 
 
-def _regeneration_plan(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
+def _regeneration_plan(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, str | None, list[dict[str, Any]]]:
     user_index = _latest_user_index(messages)
     if user_index is None:
-        return None, messages
+        return None, None, messages
     prompt = str(messages[user_index].get("content", "")).strip()
     if not prompt:
-        return None, messages
-    return prompt, messages[: user_index + 1]
+        return None, None, messages
+    # Preserve the document focus of suggestion-derived prompts so regenerating
+    # re-runs the same document-scoped retrieval, not an unscoped re-guess.
+    focus = str(messages[user_index].get("focus_document") or "").strip() or None
+    return prompt, focus, messages[: user_index + 1]
 
 
 def _latest_user_index(messages: list[dict[str, Any]]) -> int | None:

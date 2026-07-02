@@ -26,6 +26,9 @@ class PromptSuggestion:
     priority: float
     document_id: str | None
     document_type: str | None
+    # Filename of the document this prompt was derived from, so the pipeline
+    # can focus retrieval on it instead of re-guessing the source from text.
+    document_filename: str | None = None
 
 
 def generate_suggested_prompts(
@@ -570,4 +573,5 @@ def _suggestion(
         priority=priority,
         document_id=document.document_id if document else None,
         document_type=document_type,
+        document_filename=document.filename if document else None,
     )

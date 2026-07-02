@@ -80,11 +80,11 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
     else:
         tokens = {
             "veri-bg": "#0b0d10",
-            "veri-panel": "#14171d",
-            "veri-panel-2": "#191d24",
-            "veri-panel-strong": "#202630",
+            "veri-panel": "#20252f",
+            "veri-panel-2": "#262c38",
+            "veri-panel-strong": "#303947",
             "veri-sidebar": "#101319",
-            "veri-line": "#2b303a",
+            "veri-line": "#353c48",
             "veri-text": "#f5f2e8",
             "veri-muted": "#9ca6b5",
             "veri-input-bg": "#12161c",
@@ -96,7 +96,7 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
                 "linear-gradient(180deg, rgba(11, 13, 16, 0), rgba(11, 13, 16, .96) 28%), "
                 "rgba(11, 13, 16, .96)"
             ),
-            "veri-card-soft": "rgba(20, 23, 29, .78)",
+            "veri-card-soft": "rgba(25, 29, 37, .82)",
             "veri-track": "rgba(43, 48, 58, .78)",
             "veri-amber": "#ffc857",
             "veri-teal": "#36d1c4",
@@ -975,6 +975,57 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
   font-size: .82rem;
 }
 
+.veri-answer-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin: .1rem 0 .1rem 0;
+}
+
+.veri-answer-stats span {
+  background: var(--veri-panel-2);
+  border: 1px solid var(--veri-line);
+  border-radius: 999px;
+  color: var(--veri-muted);
+  font-size: .8rem;
+  font-weight: 700;
+  padding: .12rem .62rem;
+}
+
+.veri-answer-stats span.veri-answer-stat-conf {
+  color: var(--veri-text);
+}
+
+.veri-answer-divider {
+  border: none;
+  border-top: 1px solid var(--veri-line);
+  margin: .55rem 0 .7rem 0;
+}
+
+.veri-benchmark-teaser {
+  color: var(--veri-muted);
+  font-size: .8rem;
+  font-weight: 720;
+  margin: .35rem 0 .3rem 0;
+}
+
+/* The answer body dominates the card — larger, airier than diagnostics. */
+[class*="st-key-veri-answer-body"] [data-testid="stMarkdownContainer"] p,
+[class*="st-key-veri-answer-body"] [data-testid="stMarkdownContainer"] li {
+  font-size: 1.16rem;
+  line-height: 1.72;
+}
+
+[class*="st-key-veri-answer-body"] [data-testid="stMarkdownContainer"] p {
+  margin-bottom: .72rem;
+}
+
+[class*="st-key-veri-answer-body"] [data-testid="stMarkdownContainer"] h1,
+[class*="st-key-veri-answer-body"] [data-testid="stMarkdownContainer"] h2,
+[class*="st-key-veri-answer-body"] [data-testid="stMarkdownContainer"] h3 {
+  font-size: 1.32rem;
+}
+
 .veri-answer-origin {
   display: flex;
   flex-wrap: wrap;
@@ -1140,6 +1191,51 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
   font-weight: 780;
 }
 
+.veri-evidence-analysis-grid {
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.veri-knowledge-used {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem;
+  margin: .1rem 0 .3rem 0;
+}
+
+.veri-knowledge-label {
+  color: var(--veri-muted);
+  font-size: .68rem;
+  font-weight: 800;
+  letter-spacing: .05rem;
+  text-transform: uppercase;
+}
+
+.veri-knowledge-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .38rem;
+}
+
+.veri-knowledge-chip {
+  border: 1px solid var(--veri-line);
+  border-radius: 999px;
+  font-size: .76rem;
+  font-weight: 760;
+  padding: .12rem .55rem;
+}
+
+.veri-knowledge-chip.on {
+  background: rgba(123, 216, 143, .14);
+  border-color: rgba(123, 216, 143, .4);
+  color: var(--veri-local-text);
+}
+
+.veri-knowledge-chip.off {
+  color: var(--veri-muted);
+  opacity: .7;
+}
+
 .veri-evidence-reasons {
   border: 1px solid rgba(54, 209, 196, .22);
   border-radius: 8px;
@@ -1178,27 +1274,67 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
 }
 
 .veri-source-strength-row {
+  border: 1px solid var(--veri-line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .02);
+  display: grid;
+  gap: .4rem;
+  padding: .55rem .62rem;
+}
+
+.veri-source-strength-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.veri-source-strength-label {
+  color: var(--veri-muted);
+  font-size: .68rem;
+  font-weight: 800;
+  letter-spacing: .06rem;
+}
+
+.veri-source-strength-grade {
+  border-radius: 999px;
+  font-size: .68rem;
+  font-weight: 800;
+  letter-spacing: .03rem;
+  padding: .1rem .46rem;
+  text-transform: uppercase;
+}
+
+.veri-source-strength-grade-local {
+  background: rgba(123, 216, 143, .16);
+  color: var(--veri-local-text);
+}
+.veri-source-strength-grade-web {
+  background: rgba(185, 217, 255, .16);
+  color: var(--veri-web-text);
+}
+.veri-source-strength-grade-ai {
+  background: rgba(220, 200, 255, .16);
+  color: var(--veri-ai-text);
+}
+
+.veri-source-strength-meter {
   align-items: center;
   display: grid;
-  gap: .55rem;
-  grid-template-columns: 3.8rem minmax(7rem, 1fr) 3rem;
-}
-
-.veri-source-strength-label,
-.veri-source-strength-value {
-  color: var(--veri-muted);
-  font-size: .78rem;
-  font-weight: 720;
+  gap: .6rem;
+  grid-template-columns: minmax(7rem, 1fr) 3.2rem;
 }
 
 .veri-source-strength-value {
+  color: var(--veri-text);
+  font-size: 1.18rem;
+  font-weight: 820;
   text-align: right;
 }
 
 .veri-source-strength-track {
   background: var(--veri-track);
   border-radius: 999px;
-  height: .5rem;
+  height: .6rem;
   overflow: hidden;
 }
 
@@ -1266,6 +1402,15 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
   font-weight: 800;
   line-height: 1.2;
   margin: .72rem 0 .1rem 0;
+}
+
+.veri-source-stars {
+  margin-left: .5rem;
+  color: var(--veri-gold, #ffc857);
+  font-size: .78rem;
+  font-weight: 600;
+  letter-spacing: .5px;
+  vertical-align: baseline;
 }
 
 .veri-empty-state {
@@ -1652,6 +1797,21 @@ div[data-baseweb="menu"] li:hover {
   overflow-wrap: anywhere;
 }
 
+.veri-source-card-rank {
+  align-items: center;
+  background: var(--veri-teal);
+  border-radius: 6px;
+  color: var(--veri-primary-text);
+  display: inline-flex;
+  flex: none;
+  font-size: .74rem;
+  font-weight: 800;
+  height: 1.15rem;
+  justify-content: center;
+  min-width: 1.15rem;
+  padding: 0 .2rem;
+}
+
 .veri-document-explorer {
   border: 1px solid var(--veri-line);
   border-radius: 8px;
@@ -1801,7 +1961,7 @@ div[data-baseweb="menu"] li:hover {
 .veri-loading-steps {
   display: grid;
   gap: .48rem;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .veri-loading-step span {

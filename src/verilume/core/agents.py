@@ -349,7 +349,13 @@ class ConversationContextAgent:
         has_prior_context = bool(history) or _state_has_context(state)
         normalized = normalize_intent_text(question)
         topic_switch = _topic_switch_state(question, normalized)
-        if topic_switch and not _looks_like_topic_head_followup(normalized, state):
+        if (
+            topic_switch
+            and not _looks_like_topic_head_followup(normalized, state)
+            # A pronoun still bound to the person in focus is a continuation, not
+            # a topic switch — keep the focused person rather than wiping it.
+            and not _pronoun_points_to_specific_person(state, normalized)
+        ):
             state = topic_switch
         current_country = _country_from_text(question)
         if current_country:
@@ -449,6 +455,18 @@ class ConversationContextAgent:
                 news_intent=news_intent,
             )
 
+        # When a pronoun refers to a specific person the user just brought into
+        # focus (not merely the sticky role holder), resolve the pronoun directly
+        # instead of letting a topic-head/role branch collapse the query into a
+        # generic role question that would discard that person.
+        if _pronoun_points_to_specific_person(state, normalized):
+            resolved = _replace_references(
+                question.strip(), _reference_subject(state, normalized) or subject
+            )
+            if news_intent:
+                return _news_followup_query(resolved, subject, requested_sources)
+            return resolved
+
         if _looks_like_scientific_invention_followup(normalized) and state.active_research_topic:
             return f"Who introduced {state.active_research_topic}?"
 
@@ -467,7 +485,7 @@ class ConversationContextAgent:
             return _became_role_query(question, state)
 
         role = _government_role_from_text(normalized)
-        if role and state.active_country:
+        if role and state.active_country and not _pronoun_points_to_specific_person(state, normalized):
             return f"Who is the {role} of {_country_phrase(state.active_country)}?"
 
         resolved = question.strip()
@@ -1336,6 +1354,25 @@ def _conversation_subject(state: ConversationState) -> str:
     return person
 
 
+def _pronoun_points_to_specific_person(state: ConversationState, normalized: str) -> str:
+    """True when a person pronoun in the query resolves to a specific person who
+    is not merely the sticky role holder.
+
+    Guards the "collapse to generic role question" shortcut: "He is the current
+    prime minister of Luxembourg" must resolve "he" to the person in focus
+    (e.g. Luc Frieden), not be rewritten into "Who is the prime minister of
+    Luxembourg?" — which would silently discard the entity the user named.
+    """
+    tokens = set(normalized.split())
+    if not ({"he", "him", "his", "she", "her"} & tokens):
+        return False
+    person = state.active_person
+    if not person:
+        return False
+    role_holder = state.roles.get(_role_key(state.active_role), "") if state.active_role else ""
+    return person != role_holder
+
+
 def _reference_subject(state: ConversationState, normalized: str) -> str:
     tokens = set(normalized.split())
     person_pronouns = {"he", "him", "his", "she", "her"}
@@ -1366,7 +1403,7 @@ def _best_person_for_topic(entities: list[str], topic: str) -> str:
 
 def _replace_references(question: str, subject: str) -> str:
     resolved = re.sub(r"\b(?:he|him|his|she|her|it|its|they|them|their)\b", subject, question, flags=re.IGNORECASE)
-    resolved = re.sub(r"\b(?:ones|this|that|there|those|same|previous|current)\b", subject, resolved, flags=re.IGNORECASE)
+    resolved = re.sub(r"\b(?:ones|this|that|there|those|same|previous)\b", subject, resolved, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", resolved).strip()
 
 
@@ -1610,6 +1647,25 @@ def _merge_conversation_states(base: ConversationState, override: ConversationSt
     return merged
 
 
+def _question_focus_person(question: str) -> str:
+    """The named person a question is directly asking about, if any.
+
+    Returns "" when the question names no person, or when it is a role query
+    ("who is the prime minister of X") — those are handled by the roles map, not
+    by the pronoun antecedent.
+    """
+    text = (question or "").strip()
+    if not text:
+        return ""
+    normalized = normalize_intent_text(text)
+    if _government_role_from_text(normalized):
+        return ""
+    persons = _entity_candidates(text)
+    if not persons:
+        return ""
+    return next((person for person in persons if len(person.split()) >= 2), persons[0])
+
+
 def update_state_from_answer(
     state: ConversationState,
     *,
@@ -1643,6 +1699,16 @@ def update_state_from_answer(
     if not updated.active_person and extracted.persons:
         updated.active_person = extracted.persons[0]
         updated.remember_entity(updated.active_person, "person")
+    # When the user's question is *about* a specific named person (e.g. "Who is
+    # Luc Frieden"), shift the pronoun antecedent to that person even if a role
+    # holder from an earlier turn is still remembered. This is what lets a later
+    # "he ..." resolve to the person the user actually just asked about, instead
+    # of stubbornly pointing back at the sticky role holder. Explicit role
+    # follow-ups still resolve via the roles map, so they are unaffected.
+    focus_person = _question_focus_person(question)
+    if focus_person:
+        updated.active_person = focus_person
+        updated.remember_entity(focus_person, "person")
     updated.active_entities = _unique_nonempty(
         [updated.active_person, *extracted.persons, *updated.active_entities]
     )

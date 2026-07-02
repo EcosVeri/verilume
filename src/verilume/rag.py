@@ -595,10 +595,19 @@ class VerilumeRAG:
         conversation_state: ConversationState | None = None,
         should_stop: Callable[[], bool] | None = None,
         on_stage: Callable[[str], None] | None = None,
+        focus_document: str | None = None,
     ) -> RAGResponse:
         history = history or []
+        started = time.perf_counter()
         try:
-            response = self._ask_impl(question, history, conversation_state, should_stop, on_stage)
+            response = self._ask_impl(
+                question,
+                history,
+                conversation_state,
+                should_stop,
+                on_stage,
+                focus_document=focus_document,
+            )
         except GenerationStopped:
             raise
         except Exception as exc:
@@ -622,7 +631,11 @@ class VerilumeRAG:
                 },
             )
             response = _attach_conversation_state(response, state, question, question)
-        return _ensure_stable_diagnostics(response)
+        response = _ensure_stable_diagnostics(response)
+        response = _calibrate_response_confidence(response)
+        if isinstance(response.diagnostics, dict):
+            response.diagnostics["response_seconds"] = round(time.perf_counter() - started, 2)
+        return response
 
     def _ask_impl(
         self,
@@ -631,14 +644,18 @@ class VerilumeRAG:
         conversation_state: ConversationState | None = None,
         should_stop: Callable[[], bool] | None = None,
         on_stage: Callable[[str], None] | None = None,
+        focus_document: str | None = None,
     ) -> RAGResponse:
         if getattr(self.settings, "benchmark_mode", False):
             return self._ask_benchmark(question, history, conversation_state, should_stop, on_stage)
 
-        cache_key = _response_cache_key(question, history, conversation_state, self.settings)
+        cache_key = _response_cache_key(
+            question, history, conversation_state, self.settings, focus_document
+        )
         semantic_cache_allowed = (
             not history
             and conversation_state is None
+            and focus_document is None
             and not _query_needs_context_cache_key(question)
         )
         if should_stop is None:
@@ -652,7 +669,14 @@ class VerilumeRAG:
                     self._store_cached_response(cache_key, semantic_cached)
                     return semantic_cached
 
-        response = self._ask_uncached(question, history, conversation_state, should_stop, on_stage)
+        response = self._ask_uncached(
+            question,
+            history,
+            conversation_state,
+            should_stop,
+            on_stage,
+            focus_document=focus_document,
+        )
         if should_stop is None:
             if semantic_cache_allowed:
                 self._store_semantic_cached_response(question, response)
@@ -863,6 +887,7 @@ class VerilumeRAG:
         conversation_state: ConversationState | None = None,
         should_stop: Callable[[], bool] | None = None,
         on_stage: Callable[[str], None] | None = None,
+        focus_document: str | None = None,
     ) -> RAGResponse:
         _check_generation_stop(should_stop)
         self._active_should_stop = should_stop
@@ -1171,12 +1196,19 @@ class VerilumeRAG:
         diagnostics["local_retrieval_skipped"] = skip_local_retrieval
         diagnostics["local_retrieval_attempted"] = not skip_local_retrieval
 
-        if skip_local_retrieval:
+        if skip_local_retrieval and not focus_document:
             _emit_stage(on_stage, "Skipping local retrieval for public web/model evidence...")
             local_sources = []
         else:
             _emit_stage(on_stage, "Searching local evidence...")
-            local_sources = self._search_local_sources(query, identity_tokens, local_file_search_question)
+            local_sources = self._search_local_sources(
+                query,
+                identity_tokens,
+                local_file_search_question,
+                focus_document=focus_document,
+            )
+            if focus_document:
+                diagnostics["focus_document"] = focus_document
             specialized_sources = self._specialized_local_sources(
                 query,
                 action_plan.actions,
@@ -1773,12 +1805,38 @@ class VerilumeRAG:
             return
         self._response_cache[cache_key] = (time.monotonic() + ttl, copy.deepcopy(response))
 
-    def _search_local_sources(self, query: str, identity_tokens: Sequence[str], local_file_question: bool) -> list[LocalSource]:
+    def _search_local_sources(
+        self,
+        query: str,
+        identity_tokens: Sequence[str],
+        local_file_question: bool,
+        focus_document: str | None = None,
+    ) -> list[LocalSource]:
         mode = getattr(self.settings, "retrieval_mode", "hybrid")
         if local_file_question or identity_tokens:
             mode = "bm25"
         pool_limit = max(self.settings.retriever_k * 8, int(getattr(self.settings, "reranker_top_k", self.settings.retriever_k)) * 4, 40)
         search_k = max(self.settings.retriever_k, int(getattr(self.settings, "reranker_top_k", self.settings.retriever_k)))
+        focused_sources: list[LocalSource] = []
+        if focus_document:
+            # The question is known to come from this document (e.g. a suggested
+            # prompt generated from it), so search inside it with a permissive
+            # threshold. Focused chunks skip identity filtering (the "entity"
+            # in such prompts is the document's own subject, not a person to
+            # disambiguate) but still compete in reranking and relevance
+            # filtering below — this steers retrieval, it does not force the
+            # answer.
+            try:
+                focused_sources = self.retriever.search(
+                    query,
+                    k=search_k,
+                    score_threshold=0.1,
+                    mode=mode,
+                    document_filter=focus_document,
+                )
+            except TypeError:
+                # Retriever implementations without document_filter support.
+                focused_sources = []
         sources: list[LocalSource] = []
         for local_query in _local_search_queries(query, identity_tokens, local_file_question):
             threshold = self.settings.retrieval_score_threshold
@@ -1796,11 +1854,13 @@ class VerilumeRAG:
             )
         if identity_tokens and not local_file_question:
             sources = _filter_local_sources_for_identity(sources, identity_tokens)
+        if focused_sources:
+            sources = _merge_local_sources(focused_sources, sources, limit=pool_limit)
         ranked = self._rerank_local(query, sources)
         return _filter_relevant_local_sources(
             query,
             ranked,
-            identity_tokens=identity_tokens,
+            identity_tokens=identity_tokens if not focused_sources else (),
             local_file_question=local_file_question,
             limit=self.settings.retriever_k,
         )
@@ -2712,6 +2772,7 @@ def _response_cache_key(
     history: Sequence[ChatMessage],
     conversation_state: ConversationState | None = None,
     settings: AppSettings | None = None,
+    focus_document: str | None = None,
 ) -> tuple:
     normalized = normalize_query(question)
     normalized_question = normalized.canonical or re.sub(
@@ -2750,7 +2811,7 @@ def _response_cache_key(
             int(getattr(settings, "retriever_k", 0) or 0),
             float(getattr(settings, "retrieval_score_threshold", 0.0) or 0.0),
         )
-    return normalized_question, state_key, settings_key
+    return normalized_question, state_key, settings_key, str(focus_document or "")
 
 
 def _query_needs_context_cache_key(question: str) -> bool:
@@ -4793,9 +4854,14 @@ def _merge_web_sources(existing, candidates, limit):
 def _rank_web_sources(web_sources, web_queries):
     query_text = " ".join(web_queries)
     query_terms = _rank_terms(query_text)
+    role_phrase = _role_phrase_from_queries(web_queries)
     domain = classify_query_domain(query_text)
     boosted = boost_priority_sources(list(web_sources), domain)
-    ranked = sorted(boosted, key=lambda source: _web_source_rank_score(source, query_terms), reverse=True)
+    ranked = sorted(
+        boosted,
+        key=lambda source: _web_source_rank_score(source, query_terms, role_phrase),
+        reverse=True,
+    )
     non_noisy = [source for source in ranked if not _is_noisy_web_source(source)]
     if len(non_noisy) >= MAX_WEB_SOURCES_TO_SHOW:
         ranked = non_noisy + [source for source in ranked if _is_noisy_web_source(source)]
@@ -4828,7 +4894,109 @@ def _web_results_are_answerable_for_current_role(question, web_sources) -> bool:
     return False
 
 
-def _web_source_rank_score(source, query_terms):
+# Office-agnostic language that frames a tenure as *finished*, regardless of
+# which office it is — the aspect/verb is the signal, not a hard-coded office
+# list. "served as" is deliberately excluded: it also occurs for a current
+# holder ("has served as X since 2023").
+_COMPLETED_TENURE_MARKERS = (
+    "former ",
+    "ex-",
+    "stepped down",
+    "left office",
+    "no longer",
+    "succeeded by",
+    "was succeeded",
+    "out of office",
+)
+
+_YEAR_RANGE_PATTERN = r"(?:19|20)\d{2}\s*(?:to|until|through|[-–—])\s*(?:19|20)\d{2}"
+
+# A "role" noun phrase captured directly from the query ("prime minister",
+# "governor", "chief executive", …) rather than enumerated. The office being
+# asked about is whatever precedes "of <place/org>" or follows "who is (the)".
+_QUERY_ROLE_RE = re.compile(
+    r"(?:who\s+is\s+|who's\s+)?(?:the\s+)?(?:current\s+|new\s+|next\s+)?"
+    r"([a-z][a-z .'-]{2,40}?)\s+of\s+[a-z]",
+    re.IGNORECASE,
+)
+_ROLE_PHRASE_STRIP_RE = re.compile(
+    r"^(?:who\s+is|who's|what\s+is|the|current|new|next|a|an|is)\s+", re.IGNORECASE
+)
+
+
+def _role_phrase_from_queries(queries) -> str:
+    """Extract the office/role the query is about, generically.
+
+    Works for any office ("governor of California", "chief executive of Tesla",
+    "president of France") because it reads the noun phrase from the query rather
+    than matching against a fixed list of offices.
+    """
+    text = " ".join(str(query) for query in queries if query).strip()
+    if not text:
+        return ""
+    match = _QUERY_ROLE_RE.search(text)
+    if not match:
+        return ""
+    phrase = match.group(1).strip()
+    # Strip any leading filler the regex may have kept ("current prime minister").
+    while True:
+        stripped = _ROLE_PHRASE_STRIP_RE.sub("", phrase).strip()
+        if stripped == phrase:
+            break
+        phrase = stripped
+    return phrase.lower()
+
+
+def _past_tenure_penalty(haystack: str, role_phrase: str = "") -> float:
+    """Penalty weight when a source frames the queried office as a past tenure.
+
+    Freshness signal for time-sensitive "who currently holds office X" queries:
+    a source about a predecessor's completed term should rank below the current
+    holder's page. Office-agnostic — the queried role is passed in from the query
+    (``role_phrase``), and the date-range check is scoped to that role so a
+    current holder's other dated roles are not penalised.
+    """
+    if any(marker in haystack for marker in _COMPLETED_TENURE_MARKERS):
+        return 2.5
+    if role_phrase:
+        escaped = re.escape(role_phrase)
+        # "was (the) <role>"
+        if re.search(rf"\bwas\s+(?:the\s+)?{escaped}\b", haystack):
+            return 2.5
+        # "<role> ... <closed year range>" with no clause break in between
+        if re.search(rf"{escaped}[^.;]{{0,40}}?{_YEAR_RANGE_PATTERN}", haystack):
+            return 2.5
+        # "<role> ... until <year>"
+        if re.search(rf"{escaped}[^.;]{{0,25}}?until\s+(?:19|20)\d{{2}}", haystack):
+            return 2.5
+    return 0.0
+
+
+# Stock-photo / image-aggregator domains that are never authoritative for a
+# factual answer even though they often rank well in raw web search. This is a
+# generic, query-independent quality denylist (extensible / config-movable), not
+# per-entity hard-coding.
+_LOW_QUALITY_WEB_DOMAINS = (
+    "gettyimages.",
+    "getty.com",
+    "shutterstock.",
+    "istockphoto.",
+    "alamy.",
+    "dreamstime.",
+    "123rf.",
+    "depositphotos.",
+    "pinterest.",
+    "factsnippet.",
+)
+
+
+def _is_low_quality_web_source(source) -> bool:
+    domain = _web_source_domain(source).lower()
+    url = (source.url or "").lower()
+    return any(marker in domain or marker in url for marker in _LOW_QUALITY_WEB_DOMAINS)
+
+
+def _web_source_rank_score(source, query_terms, role_phrase=""):
     haystack = f"{source.title} {source.url} {source.content}".lower()
     domain = source.url.lower()
     title = (source.title or "").lower()
@@ -4856,10 +5024,11 @@ def _web_source_rank_score(source, query_terms):
         score += 0.5
     if _is_authoritative_web_source(source) and title.startswith(("prime minister", "president ", "secretary of state", "king ")):
         score += 1.25
-    if any(marker in haystack for marker in ("was prime minister", "former prime minister", "between 25", "between 20", "former president")):
-        score -= 2.5
+    score -= _past_tenure_penalty(haystack, role_phrase)
     if any(marker in haystack for marker in ("blog", "opinion", "editorial")):
         score -= 1.5
+    if _is_low_quality_web_source(source):
+        score -= 3.0
     if _is_generic_official_directory_source(source):
         score -= 3.5
     if isinstance(source.score, (int, float)):
@@ -5990,49 +6159,85 @@ def _current_public_fact_evidence(question, web_sources):
             continue
         if role == "secretary of state" and not _is_us_secretary_of_state_source(source):
             continue
-        candidates.append((source, _extract_role_candidate(source, role, allow_title_fallback=False)))
+        name, kind = _extract_role_candidate_kind(source, role)
+        candidates.append((source, name, kind))
 
     official = [
-        (source, name)
-        for source, name in candidates
+        (source, name, kind)
+        for source, name, kind in candidates
         if _is_authoritative_web_source(source) and name
     ]
     if official:
-        return sorted(
-            official,
-            key=lambda item: _current_fact_source_score(item[0], item[1], role),
-            reverse=True,
-        )
+        return _elect_role_candidates(official, role)
     if context.get("country"):
         single_country_candidates = [
-            (source, name)
-            for source, name in candidates
+            (source, name, kind)
+            for source, name, kind in candidates
             if name
         ]
         if single_country_candidates:
-            return sorted(
-                single_country_candidates,
-                key=lambda item: _current_fact_source_score(item[0], item[1], role),
-                reverse=True,
-            )
+            return _elect_role_candidates(single_country_candidates, role)
 
     by_candidate = {}
-    for source, name in candidates:
+    for source, name, kind in candidates:
         key = _normalized_candidate_name(name)
         if not key:
             continue
-        by_candidate.setdefault(key, []).append((source, name))
+        by_candidate.setdefault(key, []).append((source, name, kind))
 
     corroborated = []
     for values in by_candidate.values():
-        domains = {_web_source_domain(source) for source, _name in values if _web_source_domain(source)}
+        domains = {_web_source_domain(source) for source, _name, _kind in values if _web_source_domain(source)}
         if len(domains) >= 2:
             corroborated.extend(values)
-    return sorted(
-        corroborated,
-        key=lambda item: _current_fact_source_score(item[0], item[1], role),
+    return _elect_role_candidates(corroborated, role)
+
+
+def _elect_role_candidates(candidates, role):
+    """Rank (source, name, kind) triples so the *current* office holder wins.
+
+    Generic freshness rule for questions whose answers change with time: a
+    candidate framed as holding the office now (appositive, "is the <role>",
+    "current role" designation, incumbent) beats a candidate whose only
+    evidence is a historical appointment ("became <role> in <year>") — every
+    predecessor's biography contains that sentence. Ties break on independent
+    corroboration (distinct domains), then on source authority score.
+    """
+    groups: dict[str, dict] = {}
+    for source, name, kind in candidates:
+        key = _normalized_candidate_name(name)
+        if not key:
+            continue
+        group = groups.setdefault(key, {"items": [], "current": False, "domains": set()})
+        group["items"].append((source, name))
+        if kind == "current":
+            group["current"] = True
+        domain = _web_source_domain(source)
+        if domain:
+            group["domains"].add(domain)
+
+    ranked_groups = sorted(
+        groups.values(),
+        key=lambda group: (
+            group["current"],
+            len(group["domains"]),
+            max(
+                _current_fact_source_score(source, name, role)
+                for source, name in group["items"]
+            ),
+        ),
         reverse=True,
     )
+    ordered: list[tuple] = []
+    for group in ranked_groups:
+        ordered.extend(
+            sorted(
+                group["items"],
+                key=lambda item: _current_fact_source_score(item[0], item[1], role),
+                reverse=True,
+            )
+        )
+    return ordered
 
 
 def _current_fact_source_score(source, candidate, role):
@@ -6045,9 +6250,21 @@ def _current_fact_source_score(source, candidate, role):
         score += 1.0
     if title.startswith(role):
         score += 2.0
-    if any(marker in haystack for marker in ("current role holder", "incumbent", "has been king", "is the prime minister", "is prime minister", "is the president", "is president", "is the secretary of state", "serves as secretary of state", "sworn in as secretary of state")):
+    if any(
+        marker in haystack
+        for marker in (
+            "current role holder",
+            "incumbent",
+            "has been king",
+            f"current role {role}",
+            f"is the {role}",
+            f"is {role}",
+            f"serves as {role}",
+            f"sworn in as {role}",
+        )
+    ):
         score += 1.0
-    if any(marker in haystack for marker in ("was prime minister", "former prime minister", "between 25", "between 20", "former president")):
+    if _past_tenure_penalty(haystack, role):
         score -= 3.0
     if _is_generic_official_directory_source(source):
         score -= 4.0
@@ -6067,61 +6284,168 @@ def _is_us_secretary_of_state_source(source) -> bool:
     )
 
 
-def _extract_role_candidate(source, role, *, allow_title_fallback: bool = True):
-    patterns = {
-        "prime minister": (
-            r"\bCurrent role holder\s+(?P<name>[^.]+?)\.",
-            r"\bIncumbent\s+(?P<name>[^.]+?)\s+since\b",
+# Per-role extraction patterns, each tagged with the *tense* of the evidence it
+# captures. "current" = the source frames the person as holding the office now
+# ("is", "serves as", appositive "NAME, <Role> of X", "Incumbent ... since").
+# "historical" = the source describes an appointment event ("became <Role>"),
+# which is also true of every PREDECESSOR's biography — it must never outrank a
+# current-framed candidate for a question whose answer changes with time.
+_ROLE_CANDIDATE_PATTERNS = {
+    "prime minister": (
+        (r"\bCurrent role holder\s+(?P<name>[^.]+?)\.", "current"),
+        (r"\bIncumbent\s+(?P<name>[^.]+?)\s+since\b", "current"),
+        (
+            rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s*,\s+(?:the\s+)?(?:current\s+)?Prime Minister\b",
+            "current",
+        ),
+        (
             rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+became\s+(?:the\s+)?Prime Minister\b",
+            "historical",
+        ),
+        (
             rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+(?:is|serves\s+as|has\s+served\s+as)\s+(?:the\s+)?(?:current\s+)?Prime Minister(?:\s+of\s+{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{0,5}})?\b",
+            "current",
         ),
-        "president": (
-            rf"\bPresident\s+(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{0,5}})\b",
+    ),
+    "president": (
+        (rf"\bPresident\s+(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{0,5}})\b", "current"),
+        (
             rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s*,\s+(?:the\s+)?(?:current\s+)?President\b",
+            "current",
+        ),
+        (
+            rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+became\s+(?:the\s+)?President\b",
+            "historical",
+        ),
+        (
             rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+(?:is|has\s+been|serves\s+as|has\s+served\s+as)\s+(?:the\s+)?(?:current\s+)?President\b",
+            "current",
+        ),
+        (
             rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+is\s+the\s+\d+(?:st|nd|rd|th)\s+and\s+\d+(?:st|nd|rd|th)\s+President\b",
-            rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+is\s+the\s+[^.]{0,40}?\bcurrent\s+president(?:\s+of\s+{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{0,5}})?\b",
+            "current",
         ),
-        "secretary of state": (
+        (
+            rf"\b(?P<name>{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{1,5}})\s+is\s+the\s+[^.]{{0,40}}?\bcurrent\s+president(?:\s+of\s+{WEB_NAME_TOKEN}(?:\s+{WEB_NAME_TOKEN}){{0,5}})?\b",
+            "current",
+        ),
+    ),
+    "secretary of state": (
+        (
             r"\bSecretary\s+of\s+State\s+(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,5})\b",
+            "current",
+        ),
+        (
             r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){1,5})\s*:\s+[^.]{0,120}\b[Ss]ecretary\s+of\s+[Ss]tate\b",
+            "current",
+        ),
+        (
             r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){1,5})\s+(?:was\s+sworn\s+in\s+as|is)\s+(?:the\s+)?(?:\d+(?:st|nd|rd|th)\s+)?[Ss]ecretary\s+of\s+[Ss]tate\b",
+            "current",
+        ),
+        (
             r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){1,5})\s+serves\s+as\s+(?:the\s+)?(?:U\.S\.\s+)?[Ss]ecretary\s+of\s+[Ss]tate\b",
+            "current",
         ),
-        "king": (
-            r"\bKing\s+(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\b",
+    ),
+    "king": (
+        (r"\bKing\s+(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\b", "current"),
+        (
             r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\s+has\s+been\s+King\b",
-            r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\s+is\s+(?:the\s+)?King\b",
+            "current",
         ),
-    }
-    candidates: list[tuple[str, bool]] = []
+        (
+            r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\s+became\s+(?:the\s+)?King\b",
+            "historical",
+        ),
+        (
+            r"\b(?P<name>[A-Z][A-Za-z.\-]+(?:\s+[A-Z][A-Za-z.\-]+){0,4})\s+is\s+(?:the\s+)?King\b",
+            "current",
+        ),
+    ),
+}
+
+
+def _extract_role_candidates_detailed(source, role) -> list[tuple[str, str, bool]]:
+    """All (name, kind, from_title) role-holder candidates found in a source."""
+    candidates: list[tuple[str, str, bool]] = []
     for text, from_title in ((source.content or "", False), (source.title or "", True)):
-        for pattern in patterns.get(role, ()):
+        for pattern, kind in _ROLE_CANDIDATE_PATTERNS.get(role, ()):
             match = re.search(pattern, text)
             if not match:
                 continue
             candidate = _clean_person_name(match.group("name"))
             if _looks_like_person_name(candidate):
-                candidates.append((candidate, from_title))
+                candidates.append((candidate, kind, from_title))
 
-    if candidates:
-        best_candidate, _from_title = max(
-            candidates,
-            key=lambda item: _role_candidate_quality(item[0], from_title=item[1]),
-        )
-        return best_candidate
+    # Official profile pages often carry the office only as a designation
+    # ("Current role: Prime Minister") with the holder's name in the page title
+    # ("FRIEDEN Luc - The Luxembourg Government"). That IS current-framed
+    # evidence, generically: designation in content + person-name title.
+    if re.search(
+        rf"\bcurrent\s+role\b[:\s]*(?:the\s+)?{re.escape(role)}\b",
+        source.content or "",
+        flags=re.IGNORECASE,
+    ):
+        title_candidate = _role_candidate_from_title(source, role, require_role_prefix=False)
+        if title_candidate:
+            candidates.append((title_candidate, "current", True))
+    return candidates
 
-    if not allow_title_fallback:
-        return ""
 
-    title_head = re.split(r"\s+\|\s+|\s+-\s+", source.title or "", maxsplit=1)[0]
+def _role_candidate_from_title(source, role, *, require_role_prefix: bool = True) -> str:
+    title_head = re.split(r"\s+\|\s+|\s+-\s+", source.title or "", maxsplit=1)[0].strip()
+    # Official directory titles use "SURNAME Given" — reorder before cleaning
+    # (cleaning normalises the all-caps surname, hiding the ordering signal).
+    if re.fullmatch(r"[A-Z][A-Z\-']+\s+[A-Z][a-z\-']+", title_head):
+        surname, given = title_head.split(" ", 1)
+        title_head = f"{given} {surname.title()}"
     candidate = _clean_person_name(title_head)
     if re.fullmatch(r"[A-Z][A-Z\-']+\s+[A-Z][a-z\-']+", candidate):
         surname, given = candidate.split(" ", 1)
         candidate = f"{given} {surname.title()}"
-    if _looks_like_person_name(candidate) and _role_title_fallback_allowed(source, role):
-        return candidate
-    return ""
+    if not _looks_like_person_name(candidate):
+        return ""
+    if require_role_prefix:
+        return candidate if _role_title_fallback_allowed(source, role) else ""
+    # Profile-page path: the role evidence already came from the content's
+    # "current role" designation, so the title only needs to be a person name
+    # on a non-headline page — it will not start with the role.
+    title = (source.title or "").lower()
+    if any(marker in title for marker in ("news", "breaking", "latest updates", "opinion")):
+        return ""
+    return candidate
+
+
+def _extract_role_candidate(source, role, *, allow_title_fallback: bool = True):
+    detailed = _extract_role_candidates_detailed(source, role)
+    if detailed:
+        best_candidate, _kind, _from_title = max(
+            detailed,
+            key=lambda item: _role_candidate_quality(item[0], from_title=item[2]),
+        )
+        return best_candidate
+    if not allow_title_fallback:
+        return ""
+    return _role_candidate_from_title(source, role)
+
+
+def _extract_role_candidate_kind(source, role) -> tuple[str, str]:
+    """Best candidate plus the strongest framing kind seen for that candidate."""
+    detailed = _extract_role_candidates_detailed(source, role)
+    if not detailed:
+        return "", ""
+    best_candidate, _kind, _from_title = max(
+        detailed,
+        key=lambda item: _role_candidate_quality(item[0], from_title=item[2]),
+    )
+    best_key = _normalized_candidate_name(best_candidate)
+    kinds = {
+        kind
+        for name, kind, _from_title in detailed
+        if _normalized_candidate_name(name) == best_key
+    }
+    return best_candidate, ("current" if "current" in kinds else "historical")
 
 
 def _role_candidate_quality(candidate: str, *, from_title: bool) -> tuple[float, float]:
@@ -7608,6 +7932,83 @@ def _ensure_stable_diagnostics(response: RAGResponse) -> RAGResponse:
         value = diagnostics.get(key)
         diagnostics[key] = bool(value) if value is not None else bool(inferred[key])
     response.diagnostics = diagnostics
+    return response
+
+
+# The model (and several internal answer builders) append "Confidence: X" to the
+# answer body as an internal signalling channel; _confidence() parses it back out.
+# It must never survive to the user-facing answer: the calibrated, evidence-capped
+# confidence is rendered as a badge, and an uncapped self-report sitting in the
+# prose can directly contradict it (the "Confidence: High" on a stale answer bug).
+_SELF_REPORTED_CONFIDENCE_RE = re.compile(
+    r"[ \t]*\bConfidence:\s*(?:High|Medium|Low)\b[.!]?",
+    re.IGNORECASE,
+)
+
+_CONFIDENCE_LEVEL_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def _strip_self_reported_confidence(answer: str) -> str:
+    stripped = _SELF_REPORTED_CONFIDENCE_RE.sub("", answer or "")
+    stripped = re.sub(r"[ \t]{2,}", " ", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    return stripped
+
+
+def _cap_confidence_with_evidence(confidence: str, diagnostics: dict) -> str:
+    """Never let self-reported confidence outrank the evidence signals.
+
+    Backend counterpart of the UI display cap: response.confidence feeds exports,
+    benchmark tables, and cache policy, so it must be calibrated at the source,
+    not only at render time. Applies only to the ordinal low/medium/high values;
+    state labels ("current-information", "local-grounded", ...) pass through.
+    """
+    level = _CONFIDENCE_LEVEL_ORDER.get(confidence)
+    if level is None:
+        return confidence
+    # Zero supported claims across the whole answer means claim verification
+    # judged it entirely unverified ("only AI knowledge supports the claim") —
+    # that answer is Low confidence no matter how fluent it reads.
+    if _claims_entirely_unverified(diagnostics) and level > 0:
+        return "low"
+    agreement = str(diagnostics.get("source_agreement") or "").lower()
+    # "unsupported" from the heuristic verifier is an uncertainty signal, not
+    # proof of error (strict mode already forces low upstream when the user
+    # opts in) — so it shares the Medium ceiling with evidence conflicts.
+    uncertain = (
+        str(diagnostics.get("answer_verification_status") or "").lower() == "unsupported"
+        or diagnostics.get("local_is_older_than_web") is True
+        or diagnostics.get("evidence_conflict") is True
+        or "conflict" in agreement
+    )
+    if not uncertain or level <= 1:
+        return confidence
+    return "medium"
+
+
+def _claims_entirely_unverified(diagnostics: dict) -> bool:
+    """True when claim verification checked several claims and supported none."""
+    summary = diagnostics.get("claim_support_summary")
+    if not isinstance(summary, dict):
+        return False
+    try:
+        supported = int(summary.get("supported") or 0)
+        weak = int(summary.get("weakly_supported") or 0)
+        unsupported = int(summary.get("unsupported") or 0)
+    except (TypeError, ValueError):
+        return False
+    return supported == 0 and weak == 0 and unsupported >= 3
+
+
+def _calibrate_response_confidence(response: RAGResponse) -> RAGResponse:
+    diagnostics = response.diagnostics if isinstance(response.diagnostics, dict) else {}
+    capped = _cap_confidence_with_evidence(response.confidence, diagnostics)
+    if capped != response.confidence:
+        diagnostics["confidence_capped_from"] = response.confidence
+        response.confidence = capped
+    stripped = _strip_self_reported_confidence(response.answer)
+    if stripped and stripped != response.answer:
+        response.answer = stripped
     return response
 
 

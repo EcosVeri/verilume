@@ -148,21 +148,33 @@ class ChromaRetriever:
         mode: str = "hybrid",
         dense_k: int | None = None,
         lexical_k: int | None = None,
+        document_filter: str | None = None,
     ) -> list[LocalSource]:
-        """Return local sources using dense, lexical, or hybrid retrieval."""
+        """Return local sources using dense, lexical, or hybrid retrieval.
+
+        ``document_filter`` restricts candidates to chunks whose metadata
+        ``document`` equals the given filename — used when the question is
+        known to be about one specific indexed document (e.g. a suggested
+        prompt generated from that document).
+        """
         if not query.strip() or self.count() == 0:
             return []
         mode = (mode or "hybrid").lower()
         if mode == "dense":
-            return self._dense_search(query, k=k, score_threshold=score_threshold)
+            return self._dense_search(
+                query, k=k, score_threshold=score_threshold, document_filter=document_filter
+            )
         if mode in {"bm25", "lexical"}:
-            return self._lexical_search(query, k=k, score_threshold=score_threshold)
+            return self._lexical_search(
+                query, k=k, score_threshold=score_threshold, document_filter=document_filter
+            )
         return self._hybrid_search(
             query,
             k=k,
             score_threshold=score_threshold,
             dense_k=dense_k or max(k * 6, 30),
             lexical_k=lexical_k or max(k * 6, 30),
+            document_filter=document_filter,
         )
 
     def sample_sources_by_document(
@@ -204,13 +216,22 @@ class ChromaRetriever:
                 sources.append(source)
         return _relabel(sources)
 
-    def _dense_search(self, query: str, k: int, score_threshold: float) -> list[LocalSource]:
+    def _dense_search(
+        self,
+        query: str,
+        k: int,
+        score_threshold: float,
+        document_filter: str | None = None,
+    ) -> list[LocalSource]:
         query_embedding = self.embeddings.embed_query(query)
-        result = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=max(1, k),
-            include=["documents", "metadatas", "distances"],
-        )
+        query_kwargs: dict = {
+            "query_embeddings": [query_embedding],
+            "n_results": max(1, k),
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if document_filter:
+            query_kwargs["where"] = {"document": document_filter}
+        result = self.collection.query(**query_kwargs)
         documents = result.get("documents", [[]])[0]
         metadatas = result.get("metadatas", [[]])[0]
         distances = result.get("distances", [[]])[0]
@@ -232,8 +253,21 @@ class ChromaRetriever:
             sources.append(source)
         return _relabel(sources)
 
-    def _lexical_search(self, query: str, k: int, score_threshold: float) -> list[LocalSource]:
-        ranked = _bm25_rank(query, self._lexical_index())
+    def _lexical_search(
+        self,
+        query: str,
+        k: int,
+        score_threshold: float,
+        document_filter: str | None = None,
+    ) -> list[LocalSource]:
+        index = self._lexical_index()
+        if document_filter:
+            index = [
+                item
+                for item in index
+                if str((item.get("metadata") or {}).get("document") or "") == document_filter
+            ]
+        ranked = _bm25_rank(query, index)
         sources: list[LocalSource] = []
         for rank, (item, score) in enumerate(ranked[: max(k, 1)], start=1):
             normalized = min(1.0, score / 8.0) if score > 0 else 0.0
@@ -258,9 +292,20 @@ class ChromaRetriever:
         score_threshold: float,
         dense_k: int,
         lexical_k: int,
+        document_filter: str | None = None,
     ) -> list[LocalSource]:
-        dense = self._dense_search(query, k=dense_k, score_threshold=max(0.0, score_threshold * 0.5))
-        lexical = self._lexical_search(query, k=lexical_k, score_threshold=max(0.0, score_threshold * 0.3))
+        dense = self._dense_search(
+            query,
+            k=dense_k,
+            score_threshold=max(0.0, score_threshold * 0.5),
+            document_filter=document_filter,
+        )
+        lexical = self._lexical_search(
+            query,
+            k=lexical_k,
+            score_threshold=max(0.0, score_threshold * 0.3),
+            document_filter=document_filter,
+        )
 
         by_key: dict[str, LocalSource] = {}
         ranks: dict[str, dict[str, int]] = defaultdict(dict)

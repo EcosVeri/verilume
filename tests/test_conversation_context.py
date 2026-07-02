@@ -136,6 +136,91 @@ def test_extract_entities_finds_generic_role_holder() -> None:
     assert entities.countries == ["Luxembourg"]
 
 
+def test_focus_shifts_to_newly_named_person_for_pronoun_resolution() -> None:
+    # Reproduces the Luxembourg conversation from the screenshots.
+    # Turn 1: a role answer anchors the role holder as the pronoun antecedent.
+    state = update_state_from_answer(
+        ConversationState(),
+        question="Who is the prime minister of Luxembourg?",
+        resolved_query="Who is the prime minister of Luxembourg?",
+        answer="The current prime minister of Luxembourg is Xavier Bettel [W1].",
+    )
+    assert state.active_person == "Xavier Bettel"
+
+    # Turn 2: with no new person named, "he" still resolves to the role holder.
+    turn2 = resolve_conversation_context("When did he take over office?", [], state)
+    assert "Xavier Bettel" in turn2.resolved_question
+
+    # Turn 3: the user asks about a *different* named person -> focus must shift.
+    state = update_state_from_answer(
+        state,
+        question="Who is Luc Frieden",
+        resolved_query="Who is Luc Frieden",
+        answer="Are you asking about a specific Luc Frieden? There could be multiple people.",
+    )
+    assert state.active_person == "Luc Frieden"
+
+    # Turn 4: a later pronoun resolves to the person in focus and is NOT collapsed
+    # into a generic role question that silently drops the named entity.
+    turn4 = resolve_conversation_context(
+        "He is the current prime minister of Luxembourg", [], state
+    )
+    assert "Luc Frieden" in turn4.resolved_question
+    assert "Xavier Bettel" not in turn4.resolved_question
+    assert turn4.resolved_question != "Who is the prime minister of Luxembourg?"
+
+
+def test_question_focus_person_boundaries() -> None:
+    from verilume.core.agents import _question_focus_person
+
+    # A question about a named person -> that person.
+    assert _question_focus_person("Who is Luc Frieden") == "Luc Frieden"
+    assert _question_focus_person("tell me about Angela Merkel") == "Angela Merkel"
+    # A role query names no person -> handled by the roles map, not the antecedent.
+    assert _question_focus_person("who is the prime minister of luxembourg") == ""
+    # A pronoun-only follow-up introduces no new person.
+    assert _question_focus_person("when did he take office") == ""
+    assert _question_focus_person("") == ""
+
+
+def test_genuine_topic_switch_without_pronoun_still_switches() -> None:
+    # Guard for the topic-switch change: a real switch to a new country with an
+    # explicit role (no bound pronoun) must still drop the previous role holder.
+    state = ConversationState(
+        active_country="Luxembourg",
+        active_person="Luc Frieden",
+        active_role="prime minister",
+        roles={"prime minister": "Luc Frieden"},
+        active_topics=["Luxembourg politics"],
+    )
+    result = resolve_conversation_context("Who is the president of France?", [], state)
+    assert "Luc Frieden" not in result.resolved_question
+    assert "France" in result.resolved_question
+
+
+def test_pronoun_points_to_specific_person_guard() -> None:
+    from verilume.core.agents import _pronoun_points_to_specific_person
+
+    focused = ConversationState(
+        active_person="Luc Frieden",
+        active_role="prime minister",
+        active_country="Luxembourg",
+        roles={"prime minister": "Xavier Bettel"},
+    )
+    assert _pronoun_points_to_specific_person(
+        focused, "he is the current prime minister of luxembourg"
+    )
+    # No pronoun -> a genuine generic role follow-up should still collapse.
+    assert not _pronoun_points_to_specific_person(focused, "and the deputy prime minister")
+    # Pronoun but the person is just the role holder -> nothing special.
+    anchored = ConversationState(
+        active_person="Xavier Bettel",
+        active_role="prime minister",
+        roles={"prime minister": "Xavier Bettel"},
+    )
+    assert not _pronoun_points_to_specific_person(anchored, "when did he take office")
+
+
 def test_state_updates_from_answer_persist_generic_role_memory() -> None:
     state = update_state_from_answer(
         ConversationState(),

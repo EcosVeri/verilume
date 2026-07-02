@@ -20,8 +20,14 @@ from verilume.rag import (
     VerilumeRAG,
     _current_public_fact_evidence,
     _dedupe_web_queries,
+    _cap_confidence_with_evidence,
+    _extract_role_candidate_kind,
+    _is_low_quality_web_source,
     _merge_web_sources,
+    _past_tenure_penalty,
     _rank_web_sources,
+    _role_phrase_from_queries,
+    _strip_self_reported_confidence,
     _should_rewrite_query,
     _verify_answer_against_evidence,
 )
@@ -2762,10 +2768,10 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("sofia loizidou")
 
-        self.assertIn("Confidence:", result.answer)
+        self.assertNotIn("Confidence:", result.answer)
+        self.assertIn(result.confidence, {"low", "medium", "high"})
         self.assertIn("Sophia Loizidou", result.answer)
         self.assertIn("[W1]", result.answer)
-        self.assertFalse(result.answer.startswith("Confidence:"))
         self.assertEqual(rag.generator.chat_messages, [])
         self.assertEqual(rag.generator.final_calls, [])
 
@@ -2824,12 +2830,12 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("What is Replica Exchange Hamiltonian Monte Carlo?")
 
-        self.assertIn("Confidence:", result.answer)
+        self.assertNotIn("Confidence:", result.answer)
+        self.assertIn(result.confidence, {"low", "medium", "high"})
         self.assertIn("Key points:", result.answer)
         self.assertIn("Sources:", result.answer)
         self.assertIn("combines Hamiltonian Monte Carlo", result.answer)
         self.assertIn("[W1]", result.answer)
-        self.assertFalse(result.answer.startswith("Confidence:"))
         self.assertEqual(rag.generator.chat_messages, [])
 
     def test_public_entity_lookup_prefers_clear_local_answer(self) -> None:
@@ -3774,6 +3780,357 @@ class RAGRoutingTests(unittest.TestCase):
         self.assertEqual(ranked[0].url, "https://gouvernement.lu/en/gouvernement/luc-frieden.html")
         self.assertEqual([source.label for source in ranked], ["W1", "W2"])
 
+    def test_web_source_ranking_prefers_current_holder_over_past_tenure(self) -> None:
+        # The demonstrated failure: a stale "served as PM from 2013 to 2023"
+        # page must rank below the current office holder's page.
+        ranked = _rank_web_sources(
+            [
+                WebSource(
+                    label="W1",
+                    title="27 Facts About Xavier Bettel - FactSnippet",
+                    url="https://www.factsnippet.com/site/facts-about-xavier-bettel.html",
+                    content=(
+                        "Xavier Bettel served as the 24th prime minister of "
+                        "Luxembourg from 2013 to 2023."
+                    ),
+                    score=0.9,
+                ),
+                WebSource(
+                    label="W2",
+                    title="FRIEDEN Luc - The Luxembourg Government",
+                    url="https://gouvernement.lu/en/gouvernement/luc-frieden.html",
+                    content="Luc Frieden is the Prime Minister of Luxembourg.",
+                    score=0.3,
+                ),
+            ],
+            ["who is the current prime minister of Luxembourg"],
+        )
+
+        self.assertEqual(ranked[0].url, "https://gouvernement.lu/en/gouvernement/luc-frieden.html")
+
+    def test_past_tenure_penalty_is_office_scoped(self) -> None:
+        # A completed term of the queried office is penalised...
+        self.assertGreater(
+            _past_tenure_penalty(
+                "prime minister of luxembourg from 2013 to 2023", "prime minister"
+            ),
+            0,
+        )
+        self.assertGreater(
+            _past_tenure_penalty("he was prime minister until 2023", "prime minister"), 0
+        )
+        # ...but a current holder's earlier, unrelated role is not.
+        self.assertEqual(
+            _past_tenure_penalty(
+                "he is the prime minister; finance minister from 2009 to 2013", "prime minister"
+            ),
+            0,
+        )
+        # Office-agnostic completion language is penalised with no role hint.
+        self.assertGreater(_past_tenure_penalty("she is the former governor of texas"), 0)
+
+    def test_past_tenure_penalty_generalises_to_any_office(self) -> None:
+        # The mechanism is query-driven, not hard-coded to PM/president. A stale
+        # "governor ... 2011 to 2019" page is penalised when the query is about a
+        # governor, using only the role phrase extracted from the query.
+        role = _role_phrase_from_queries(["who is the current governor of California"])
+        self.assertEqual(role, "governor")
+        self.assertGreater(
+            _past_tenure_penalty("governor of california from 2011 to 2019", role), 0
+        )
+        self.assertEqual(_role_phrase_from_queries(["the chief executive of Tesla"]), "chief executive")
+
+    def test_web_source_ranking_prefers_current_holder_for_non_pm_office(self) -> None:
+        ranked = _rank_web_sources(
+            [
+                WebSource(
+                    label="W1",
+                    title="Jerry Brown facts",
+                    url="https://www.factsnippet.com/site/jerry-brown.html",
+                    content="Jerry Brown was governor of California from 2011 to 2019.",
+                    score=0.9,
+                ),
+                WebSource(
+                    label="W2",
+                    title="Office of Governor Gavin Newsom",
+                    url="https://www.gov.ca.gov/",
+                    content="Gavin Newsom is the Governor of California.",
+                    score=0.3,
+                ),
+            ],
+            ["who is the current governor of California"],
+        )
+        self.assertEqual(ranked[0].url, "https://www.gov.ca.gov/")
+
+    def test_strip_self_reported_confidence_removes_phrase_keeps_citations(self) -> None:
+        self.assertEqual(
+            _strip_self_reported_confidence(
+                "The current prime minister is Xavier Bettel. Confidence: High [W2]"
+            ),
+            "The current prime minister is Xavier Bettel. [W2]",
+        )
+        self.assertEqual(
+            _strip_self_reported_confidence("Answer text [S1].\n\nConfidence: Medium"),
+            "Answer text [S1].",
+        )
+        # Untouched answers pass through unchanged.
+        self.assertEqual(
+            _strip_self_reported_confidence("Plain answer with no self report."),
+            "Plain answer with no self report.",
+        )
+
+    def test_cap_confidence_with_evidence_backend(self) -> None:
+        # Freshness/source conflict caps self-reported high to medium.
+        self.assertEqual(
+            _cap_confidence_with_evidence("high", {"source_agreement": "freshness_conflict"}),
+            "medium",
+        )
+        self.assertEqual(
+            _cap_confidence_with_evidence("high", {"local_is_older_than_web": True}),
+            "medium",
+        )
+        # An unsupported verification (heuristic uncertainty signal) caps to medium.
+        self.assertEqual(
+            _cap_confidence_with_evidence("high", {"answer_verification_status": "unsupported"}),
+            "medium",
+        )
+        # No conflict -> untouched; never raises confidence.
+        self.assertEqual(_cap_confidence_with_evidence("high", {}), "high")
+        self.assertEqual(
+            _cap_confidence_with_evidence("low", {"source_agreement": "multiple_sources"}), "low"
+        )
+        # State labels pass through the cap untouched.
+        self.assertEqual(
+            _cap_confidence_with_evidence(
+                "current-information", {"source_agreement": "freshness_conflict"}
+            ),
+            "current-information",
+        )
+
+    def test_ask_strips_self_reported_confidence_from_answer(self) -> None:
+        rag = self._make_rag(
+            local_answer="Local answer [S1].\n\nConfidence: High",
+            web_answer="Web answer [W1].\n\nConfidence: High",
+        )
+
+        result = rag.ask("What does the document say?")
+
+        # Whichever route produced the answer, the internal self-report must
+        # never survive to the user-facing text; citations are preserved.
+        self.assertNotIn("Confidence:", result.answer)
+        self.assertRegex(result.answer, r"\[(?:S|W)1\]")
+
+    def test_current_role_election_prefers_current_framing_over_historical(self) -> None:
+        # The demonstrated failure: Bettel's biography ("became Prime Minister
+        # in 2013") beat Frieden's current-framed sources. The election must
+        # rank current framing above historical appointment sentences.
+        sources = [
+            WebSource(
+                label="W1",
+                title="BETTEL Xavier - The Luxembourg Government",
+                url="https://gouvernement.lu/en/gouvernement/xavier-bettel.html",
+                content=(
+                    "Xavier Bettel became Prime Minister in December 2013 "
+                    "following the legislative elections."
+                ),
+            ),
+            WebSource(
+                label="W2",
+                title="FRIEDEN Luc - The Luxembourg Government",
+                url="https://gouvernement.lu/en/gouvernement/luc-frieden.html",
+                content=(
+                    "Current role Prime Minister. After his studies, Luc Frieden "
+                    "obtained a master's degree in business law."
+                ),
+            ),
+            WebSource(
+                label="W3",
+                title="A Conversation with Luc Frieden, Prime Minister of Luxembourg",
+                url="https://iop.harvard.edu/events/conversation-luc-frieden",
+                content="An event with Luc Frieden, Prime Minister of Luxembourg.",
+            ),
+        ]
+
+        evidence = _current_public_fact_evidence(
+            "who is the prime minister of luxembourg", sources
+        )
+
+        self.assertTrue(evidence)
+        self.assertIn("Frieden", evidence[0][1])
+
+    def test_current_role_election_single_current_source_still_wins(self) -> None:
+        # Regression guard: with one ordinary current-framed source the election
+        # must behave exactly like the old path.
+        sources = [
+            WebSource(
+                label="W1",
+                title="UK Government",
+                url="https://www.gov.uk/government/ministers/prime-minister",
+                content="Keir Starmer is the Prime Minister of the United Kingdom.",
+            ),
+        ]
+        evidence = _current_public_fact_evidence(
+            "who is the prime minister of the uk", sources
+        )
+        self.assertTrue(evidence)
+        self.assertIn("Starmer", evidence[0][1])
+
+    def test_profile_page_with_current_role_designation_yields_candidate(self) -> None:
+        source = WebSource(
+            label="W1",
+            title="FRIEDEN Luc - The Luxembourg Government",
+            url="https://gouvernement.lu/en/gouvernement/luc-frieden.html",
+            content="Current role Prime Minister. Biography follows.",
+        )
+        name, kind = _extract_role_candidate_kind(source, "prime minister")
+        self.assertEqual(name, "Luc Frieden")
+        self.assertEqual(kind, "current")
+
+    def test_claims_entirely_unverified_caps_confidence_to_low(self) -> None:
+        # The screenshot case: 0/11 claims supported, badge said Medium.
+        summary = {"supported": 0, "weakly_supported": 0, "unsupported": 11}
+        self.assertEqual(
+            _cap_confidence_with_evidence("medium", {"claim_support_summary": summary}),
+            "low",
+        )
+        self.assertEqual(
+            _cap_confidence_with_evidence("high", {"claim_support_summary": summary}),
+            "low",
+        )
+        # Any supported claim (or too few claims to judge) leaves confidence alone.
+        self.assertEqual(
+            _cap_confidence_with_evidence(
+                "medium",
+                {"claim_support_summary": {"supported": 1, "weakly_supported": 0, "unsupported": 2}},
+            ),
+            "medium",
+        )
+        self.assertEqual(
+            _cap_confidence_with_evidence(
+                "medium",
+                {"claim_support_summary": {"supported": 0, "weakly_supported": 0, "unsupported": 2}},
+            ),
+            "medium",
+        )
+
+    def test_focus_document_scopes_local_retrieval(self) -> None:
+        # A suggested prompt derived from an uploaded document must search that
+        # document (document_filter) instead of re-guessing the source from the
+        # prompt text — the Master's Programme hallucination case.
+        rag = self._make_rag(
+            local_answer="Key findings from the thesis [S1].",
+            local_sources=[
+                LocalSource(
+                    "S1",
+                    "master_thesis_2026.pdf",
+                    1,
+                    "c1",
+                    (
+                        "This thesis was submitted to the Master's Programme in "
+                        "Security and Cloud Computing. Key findings include "
+                        "improved cloud security monitoring."
+                    ),
+                    0.9,
+                )
+            ],
+        )
+
+        result = rag.ask(
+            "What are the key findings in Master's Programme in Security and Cloud Computing?",
+            focus_document="master_thesis_2026.pdf",
+        )
+
+        focused_calls = [
+            kwargs
+            for _args, kwargs in rag.retriever.calls
+            if kwargs.get("document_filter") == "master_thesis_2026.pdf"
+        ]
+        self.assertTrue(focused_calls, "expected a document-scoped retriever call")
+        self.assertEqual(result.diagnostics.get("focus_document"), "master_thesis_2026.pdf")
+        self.assertIn("[S1]", result.answer)
+
+    def test_focus_document_absent_keeps_existing_behaviour(self) -> None:
+        rag = self._make_rag(local_answer="Local answer [S1].")
+
+        rag.ask("What does the document say?")
+
+        self.assertFalse(
+            any(
+                kwargs.get("document_filter")
+                for _args, kwargs in rag.retriever.calls
+            )
+        )
+
+    def test_role_phrase_empty_for_non_office_queries(self) -> None:
+        # No "<role> of <place>" structure -> no role phrase, so freshness scoping
+        # simply does not apply (no spurious penalties on ordinary questions).
+        self.assertEqual(_role_phrase_from_queries(["who is Luc Frieden"]), "")
+        self.assertEqual(_role_phrase_from_queries(["what is photosynthesis"]), "")
+        self.assertEqual(_role_phrase_from_queries([""]), "")
+
+    def test_past_tenure_penalty_ignores_current_open_ended_term(self) -> None:
+        # An incumbent framed with an open-ended term must never be penalised.
+        self.assertEqual(
+            _past_tenure_penalty("prime minister of luxembourg since 2023", "prime minister"), 0
+        )
+        self.assertEqual(
+            _past_tenure_penalty("is the current prime minister of luxembourg", "prime minister"),
+            0,
+        )
+        self.assertEqual(
+            _past_tenure_penalty("gavin newsom is the governor of california", "governor"), 0
+        )
+
+    def test_past_tenure_penalty_detects_generic_completion_language(self) -> None:
+        # Office-agnostic completion markers fire without any role hint.
+        for phrase in (
+            "the former chancellor of germany",
+            "he stepped down in 2024",
+            "she was succeeded by her deputy",
+            "no longer the mayor",
+        ):
+            self.assertGreater(_past_tenure_penalty(phrase), 0, phrase)
+
+    def test_freshness_does_not_reorder_when_both_sources_are_current(self) -> None:
+        # Two current, authoritative sources — neither past-tenure — keep their
+        # relevance order; the freshness signal must not invent a reordering.
+        ranked = _rank_web_sources(
+            [
+                WebSource(
+                    label="W1",
+                    title="Office of the Governor",
+                    url="https://www.gov.ca.gov/",
+                    content="Gavin Newsom is the current Governor of California.",
+                    score=0.8,
+                ),
+                WebSource(
+                    label="W2",
+                    title="California Governor - Wikipedia",
+                    url="https://en.wikipedia.org/wiki/Governor_of_California",
+                    content="The Governor of California is the head of government.",
+                    score=0.4,
+                ),
+            ],
+            ["who is the current governor of California"],
+        )
+        self.assertEqual(ranked[0].url, "https://www.gov.ca.gov/")
+
+    def test_low_quality_stock_photo_source_is_detected(self) -> None:
+        getty = WebSource(
+            label="W1",
+            title="Prime Minister Of Luxembourg Xavier Bettel Photos",
+            url="https://www.gettyimages.com/photos/prime-minister-of-luxembourg",
+            content="stock photos",
+        )
+        gov = WebSource(
+            label="W2",
+            title="The Luxembourg Government",
+            url="https://gouvernement.lu/en/gouvernement.html",
+            content="government",
+        )
+        self.assertTrue(_is_low_quality_web_source(getty))
+        self.assertFalse(_is_low_quality_web_source(gov))
+
     def test_web_source_ranking_drops_noisy_sources_when_enough_alternatives_exist(self) -> None:
         sources = [
             WebSource(
@@ -3908,11 +4265,11 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Search the web about econometrics")
 
-        self.assertIn("Confidence:", result.answer)
+        self.assertNotIn("Confidence:", result.answer)
+        self.assertIn(result.confidence, {"low", "medium", "high"})
         self.assertIn("Econometrics uses statistical methods", result.answer)
         self.assertIn("[W1]", result.answer)
         self.assertNotIn("answer synthesis failed", result.answer.lower())
-        self.assertFalse(result.answer.startswith("Confidence:"))
         self.assertIn(result.confidence, {"high", "medium"})
 
     def test_final_synthesis_uses_verified_evidence_payload(self) -> None:
@@ -3933,7 +4290,8 @@ class RAGRoutingTests(unittest.TestCase):
 
         result = rag.ask("Search the web about econometrics")
 
-        self.assertIn("Confidence:", result.answer)
+        self.assertNotIn("Confidence:", result.answer)
+        self.assertIn(result.confidence, {"low", "medium", "high"})
         self.assertIn("[W1]", result.answer)
         self.assertTrue(result.answer.startswith("Econometrics uses statistical methods"))
         self.assertEqual(len(rag.generator.chat_messages), 1)

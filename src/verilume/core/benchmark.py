@@ -74,26 +74,11 @@ class BenchmarkReport:
         if not self.results:
             return "Benchmark mode could not produce any results."
 
-        best = _result_by_mode(self.results, self.best_mode) or best_benchmark_result(self.results)
-        rows = [
-            "| Mode | Confidence | Sources | Time | Faithfulness |",
-            "| --- | --- | ---: | ---: | ---: |",
-        ]
-        for result in self.results:
-            faithfulness = (
-                f"{int(round(result.faithfulness_score * 100))}%"
-                if result.faithfulness_score is not None
-                else "N/A"
-            )
-            rows.append(
-                "| "
-                f"{MODE_LABELS.get(result.mode, result.mode)} | "
-                f"{result.confidence} | "
-                f"{result.source_count} | "
-                f"{result.latency_seconds:.2f}s | "
-                f"{faithfulness} |"
-            )
+        if not self.best_mode:
+            return self._answer_markdown_no_winner()
 
+        best = _result_by_mode(self.results, self.best_mode) or best_benchmark_result(self.results)
+        rows = _benchmark_rows_markdown(self.results)
         notes = "\n".join(f"- {note}" for note in self.notes)
         notes_block = f"\n\n**Notes**\n{notes}" if notes else ""
         return (
@@ -103,6 +88,41 @@ class BenchmarkReport:
             + "\n".join(rows)
             + notes_block
         ).strip()
+
+    def _answer_markdown_no_winner(self) -> str:
+        rows = _benchmark_rows_markdown(self.results)
+        notes = "\n".join(f"- {note}" for note in self.notes)
+        notes_block = f"\n\n**Notes**\n{notes}" if notes else ""
+        return (
+            "**No mode produced a grounded answer for this question.**\n\n"
+            "Every strategy returned an insufficient or unsupported result, so no "
+            "winner is declared.\n\n"
+            "**Benchmark Results**\n"
+            + "\n".join(rows)
+            + notes_block
+        ).strip()
+
+
+def _benchmark_rows_markdown(results: list[BenchmarkResult]) -> list[str]:
+    rows = [
+        "| Mode | Confidence | Sources | Time | Faithfulness |",
+        "| --- | --- | ---: | ---: | ---: |",
+    ]
+    for result in results:
+        faithfulness = (
+            f"{int(round(result.faithfulness_score * 100))}%"
+            if result.faithfulness_score is not None
+            else "N/A"
+        )
+        rows.append(
+            "| "
+            f"{MODE_LABELS.get(result.mode, result.mode)} | "
+            f"{result.confidence} | "
+            f"{result.source_count} | "
+            f"{result.latency_seconds:.2f}s | "
+            f"{faithfulness} |"
+        )
+    return rows
 
 
 def make_benchmark_result(mode: str, response: RAGResponse, latency_seconds: float) -> BenchmarkResult:
@@ -128,6 +148,16 @@ def make_benchmark_result(mode: str, response: RAGResponse, latency_seconds: flo
     )
 
 
+# Confidence values that mean "this mode failed to produce a usable answer".
+_UNGROUNDED_CONFIDENCE = {"low", "generation-error", "needs-token", "model-selection-warning"}
+
+
+def _result_is_grounded(result: BenchmarkResult) -> bool:
+    if result.source_count > 0:
+        return True
+    return str(result.confidence).lower() not in _UNGROUNDED_CONFIDENCE
+
+
 def best_benchmark_result(results: list[BenchmarkResult]) -> BenchmarkResult:
     if not results:
         raise ValueError("Cannot choose a benchmark winner without results.")
@@ -135,17 +165,29 @@ def best_benchmark_result(results: list[BenchmarkResult]) -> BenchmarkResult:
 
 
 def choose_best_mode(results: list[BenchmarkResult]) -> str:
-    return best_benchmark_result(results).mode if results else FULL
+    """Best mode among grounded results; "" when every mode failed.
+
+    Crowning a "best" mode when all modes returned insufficient answers is
+    misleading — the latency tiebreak would celebrate the fastest failure.
+    """
+    if not results:
+        return FULL
+    grounded = [result for result in results if _result_is_grounded(result)]
+    if not grounded:
+        return ""
+    return best_benchmark_result(grounded).mode
 
 
 def benchmark_notes(results: list[BenchmarkResult], best_mode: str) -> list[str]:
     notes: list[str] = []
-    best = _result_by_mode(results, best_mode)
+    best = _result_by_mode(results, best_mode) if best_mode else None
     if best is not None:
         notes.append(
             f"{MODE_LABELS.get(best.mode, best.mode)} had the strongest combined confidence, "
             f"source count, and verification score."
         )
+    elif results:
+        notes.append("No mode produced a grounded answer for this question.")
     if any(result.mode == AI_ONLY and result.source_count == 0 for result in results):
         notes.append("AI-only answers are useful for comparison but are not independently cited.")
     if any(result.mode == WEB_ONLY and result.web_source_count == 0 for result in results):

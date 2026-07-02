@@ -57,6 +57,48 @@ def test_benchmark_report_converts_to_rag_response() -> None:
     assert response.diagnostics["benchmark_report"]["best_mode"] == LOCAL_ONLY
 
 
+def test_choose_best_mode_declares_no_winner_when_all_modes_fail() -> None:
+    # The screenshot bug: "best: Local" shown under "I could not answer..." —
+    # with every mode low-confidence and sourceless, the latency tiebreak was
+    # crowning the fastest failure.
+    failed = [
+        make_benchmark_result(
+            mode,
+            RAGResponse("I could not answer from local files.", [], [], False, "low"),
+            0.1 * (index + 1),
+        )
+        for index, mode in enumerate((FULL, LOCAL_ONLY, AI_ONLY, WEB_ONLY))
+    ]
+
+    assert choose_best_mode(failed) == ""
+
+    report = BenchmarkReport("Question?", failed, "", notes=["No mode produced a grounded answer for this question."])
+    answer = report.to_rag_response().answer
+    assert "No mode produced a grounded answer" in answer
+    assert "Best mode:" not in answer
+
+
+def test_choose_best_mode_picks_only_among_grounded_results() -> None:
+    failed_local = make_benchmark_result(
+        LOCAL_ONLY,
+        RAGResponse("I could not answer.", [], [], False, "low"),
+        0.01,  # fastest — must not win on latency
+    )
+    grounded_web = make_benchmark_result(
+        WEB_ONLY,
+        RAGResponse(
+            "Web answer [W1]",
+            [],
+            [WebSource("W1", "Web", "https://example.com", "text", 0.8)],
+            True,
+            "web-assisted",
+        ),
+        2.0,
+    )
+
+    assert choose_best_mode([failed_local, grounded_web]) == WEB_ONLY
+
+
 def test_benchmark_mode_settings_isolate_strategies() -> None:
     settings = AppSettings(benchmark_mode=True, semantic_cache_enabled=True, enable_web_search=True)
     modes = dict(_benchmark_mode_settings(settings))

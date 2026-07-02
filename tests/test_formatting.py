@@ -6,6 +6,8 @@ from verilume.core.schemas import LocalSource, WebSource
 from verilume.utils.formatting import (
     local_source_confidence,
     source_confidence,
+    source_quality,
+    source_quality_stars,
     web_source_rows,
     web_source_type,
 )
@@ -66,6 +68,24 @@ class FormattingTests(unittest.TestCase):
             local_source_confidence([LocalSource("S1", "doc.pdf", 1, "c1", "text", 0.5)]),
             "Low",
         )
+
+    def test_web_source_type_detects_wikipedia_and_blog_sources(self) -> None:
+        wiki = WebSource("W1", "Norway", "https://en.wikipedia.org/wiki/Norway", "encyclopedia entry")
+        blog = WebSource("W2", "My take", "https://someone.medium.com/post", "opinion piece")
+        self.assertEqual(web_source_type(wiki), "Wikipedia")
+        self.assertEqual(source_confidence(wiki), "Medium")
+        self.assertEqual(web_source_type(blog), "Blog")
+        self.assertEqual(source_confidence(blog), "Low")
+
+    def test_source_quality_stars_rank_official_above_self_published(self) -> None:
+        self.assertEqual(source_quality("Government"), 5)
+        self.assertGreater(source_quality("Research"), source_quality("Wikipedia"))
+        self.assertGreater(source_quality("Wikipedia"), source_quality("Blog"))
+        self.assertEqual(source_quality_stars("Government"), "★★★★★")
+        self.assertEqual(source_quality_stars("Wikipedia"), "★★★☆☆")
+        stars = source_quality_stars("Blog")
+        self.assertEqual(len(stars), 5)
+        self.assertEqual(stars.count("★"), 2)
 
     def test_web_source_confidence_scores_high_medium_low_domains(self) -> None:
         self.assertEqual(

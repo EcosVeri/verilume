@@ -245,7 +245,7 @@ class SemanticCacheTests(unittest.TestCase):
             rag.settings = settings
             rag.semantic_cache = cache
             rag._response_cache = {}
-            rag._ask_uncached = lambda question, history, conversation_state, should_stop, on_stage: fresh_response
+            rag._ask_uncached = lambda question, history, conversation_state, should_stop, on_stage, **kwargs: fresh_response
 
             result = VerilumeRAG.ask(
                 rag,

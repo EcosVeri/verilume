@@ -46,6 +46,13 @@ def render_dashboard(
     if "dashboard_collapsed" not in st.session_state:
         st.session_state["dashboard_collapsed"] = DEFAULT_DASHBOARD_COLLAPSED
 
+    # Auto-collapse once the conversation starts (ChatGPT-style) to give the
+    # chat more room. Fires a single time so it never fights a later manual
+    # expand by the user.
+    if st.session_state.get("messages") and not st.session_state.get("_dashboard_autocollapsed"):
+        st.session_state["dashboard_collapsed"] = True
+        st.session_state["_dashboard_autocollapsed"] = True
+
     dashboard_collapsed = bool(st.session_state.get("dashboard_collapsed", False))
     chevron = "⌄ Dashboard" if dashboard_collapsed else "⌃ Dashboard"
     st.markdown(
@@ -156,12 +163,19 @@ def render_suggested_prompts(
     for index, suggestion in enumerate(suggestions, start=1):
         st.markdown('<div class="veri-dark-button-anchor veri-prompt-button-wrap"></div>', unsafe_allow_html=True)
         if st.button(
-            suggestion.title,
+            f"{_prompt_icon(suggestion)} {suggestion.title}",
             key=f"suggest_dashboard_{index}_{_prompt_key_fragment(suggestion.title)}",
             help=suggestion.category.replace("_", " ").title(),
             use_container_width=True,
         ):
             st.session_state["pending_prompt"] = suggestion.prompt
+            # Carry the source document through the click so retrieval can be
+            # focused on the document the suggestion was generated from.
+            focus = getattr(suggestion, "document_filename", None)
+            if focus:
+                st.session_state["pending_prompt_document"] = focus
+            else:
+                st.session_state.pop("pending_prompt_document", None)
             st.rerun()
 
 
@@ -188,6 +202,44 @@ def recent_activity_from_messages(messages: Sequence[dict[str, Any]], limit: int
         for message in reversed(messages)
         if message.get("role") == "user" and str(message.get("content", "")).strip()
     ][:limit]
+
+
+_PROMPT_CATEGORY_ICONS = {
+    "onboarding": "🚀",
+    "collection": "📚",
+    "inventory": "📋",
+    "listing": "📋",
+    "comparison": "📊",
+    "search": "🔍",
+    "recent_activity": "🕘",
+    "recent_upload": "🆕",
+    "summary": "📄",
+    "formula": "🧮",
+    "extraction": "🔎",
+    "structure": "🗂️",
+    "table": "📊",
+    "presentation": "📝",
+    "scientific_paper": "🧠",
+}
+
+_PROMPT_TITLE_KEYWORD_ICONS = (
+    ("speaker note", "📝"),
+    ("lecture note", "📝"),
+    ("literature review", "📝"),
+    ("list", "📋"),
+    ("compare", "📊"),
+    ("summar", "📄"),
+    ("explain", "🧠"),
+)
+
+
+def _prompt_icon(suggestion: PromptSuggestion) -> str:
+    """Return a display-only icon for a suggested prompt button."""
+    title = suggestion.title.lower()
+    for keyword, icon in _PROMPT_TITLE_KEYWORD_ICONS:
+        if keyword in title:
+            return icon
+    return _PROMPT_CATEGORY_ICONS.get(suggestion.category, "💡")
 
 
 def _prompt_key_fragment(prompt: str) -> str:

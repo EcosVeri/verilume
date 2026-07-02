@@ -146,24 +146,32 @@ def web_source_type(source: WebSource) -> str:
         or "news" in haystack
     ):
         return "News"
+    if _domain_contains(domain, ("wikipedia.org", "wikimedia.org")):
+        return "Wikipedia"
     if _domain_contains(domain, ("youtube.com", "youtu.be")):
         return "Video"
     if _domain_contains(
         domain, ("linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com")
     ):
         return "Social media"
+    if _domain_contains(
+        domain, ("blog", "medium.com", "substack.com", "wordpress.com", "blogspot.")
+    ) or "reddit.com" in domain or "forum" in domain:
+        return "Blog"
     return "Web"
 
 
 def source_badge(source_type: str) -> str:
     badges = {
-        "University": "\U0001f393 University",
+        "University": "\U0001f3eb University",
         "GitHub": "\U0001f4bb GitHub",
         "Research": "\U0001f4da Research",
         "Government": "\U0001f3db Government",
         "News": "\U0001f4f0 News",
+        "Wikipedia": "\U0001f4d6 Wikipedia",
         "Video": "\U0001f3a5 Video",
         "Social media": "\U0001f464 Social",
+        "Blog": "✍ Blog",
         "Web": "\U0001f310 Web",
         "Current information": "\U0001f310 Current",
         "Local document": "\U0001f4c4 Local",
@@ -173,15 +181,43 @@ def source_badge(source_type: str) -> str:
     return badges.get(source_type, badges["Web"])
 
 
+# Editorial trust rating per source type, 1 (weakest) to 5 (strongest). Used to
+# surface an at-a-glance quality signal that reinforces the evidence-first
+# framing — official/academic sources rank highest, self-published lowest.
+_SOURCE_QUALITY: dict[str, int] = {
+    "Government": 5,
+    "Research": 5,
+    "University": 5,
+    "Local document": 5,
+    "GitHub": 4,
+    "News": 4,
+    "Wikipedia": 3,
+    "Video": 3,
+    "Web": 3,
+    "Current information": 3,
+    "AI knowledge": 3,
+    "Model knowledge": 3,
+    "Blog": 2,
+    "Social media": 2,
+}
+
+
+def source_quality(source_type: str) -> int:
+    return _SOURCE_QUALITY.get(source_type, 3)
+
+
+def source_quality_stars(source_type: str) -> str:
+    filled = source_quality(source_type)
+    return "★" * filled + "☆" * (5 - filled)
+
+
 def source_confidence(source: WebSource) -> str:
     source_type = web_source_type(source)
     if source_type in {"GitHub", "Government", "University", "Research"}:
         return "High"
-    if source_type in {"News", "Video"}:
+    if source_type in {"News", "Video", "Wikipedia"}:
         return "Medium"
-    if source_type == "Social media":
-        return "Low"
-    if _domain_contains(_domain(source.url), ("blog", "forum", "reddit.com", "medium.com")):
+    if source_type in {"Social media", "Blog"}:
         return "Low"
     return "Medium" if source.content.strip() else "Low"
 

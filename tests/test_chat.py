@@ -13,6 +13,7 @@ from verilume.ui.chat import (
     _GEN_STATE_KEY,
     ASSISTANT_ICON,
     _answer_origin,
+    _cap_display_confidence,
     _chat_placeholder,
     _consume_pending_prompt,
     _display_answer,
@@ -23,6 +24,7 @@ from verilume.ui.chat import (
     _history_bucket,
     _partition_message_history,
     _poll_generation_impl,
+    _render_benchmark_body,
     _render_benchmark_report,
     _render_message_history,
     _render_sources,
@@ -68,10 +70,27 @@ class ChatInteractionTests(unittest.TestCase):
             {"role": "assistant", "content": "Second answer"},
         ]
 
-        prompt, trimmed = _regeneration_plan(messages)
+        prompt, focus, trimmed = _regeneration_plan(messages)
 
         self.assertEqual(prompt, "Second question")
+        self.assertIsNone(focus)
         self.assertEqual(trimmed, messages[:3])
+
+    def test_regeneration_plan_preserves_focus_document(self) -> None:
+        messages = [
+            {
+                "role": "user",
+                "content": "Key findings in the thesis?",
+                "focus_document": "master_thesis_2026.pdf",
+            },
+            {"role": "assistant", "content": "Findings answer"},
+        ]
+
+        prompt, focus, trimmed = _regeneration_plan(messages)
+
+        self.assertEqual(prompt, "Key findings in the thesis?")
+        self.assertEqual(focus, "master_thesis_2026.pdf")
+        self.assertEqual(trimmed, messages[:1])
 
     def test_timestamp_formatting(self) -> None:
         self.assertEqual(
@@ -106,10 +125,25 @@ class ChatInteractionTests(unittest.TestCase):
         session_state = {"pending_prompt": "  List indexed documents  "}
 
         with patch("verilume.ui.chat.st.session_state", session_state):
-            self.assertEqual(_consume_pending_prompt(), "List indexed documents")
-            self.assertIsNone(_consume_pending_prompt())
+            self.assertEqual(
+                _consume_pending_prompt(), ("List indexed documents", None)
+            )
+            self.assertEqual(_consume_pending_prompt(), (None, None))
 
         self.assertNotIn("pending_prompt", session_state)
+
+    def test_pending_prompt_carries_focus_document(self) -> None:
+        session_state = {
+            "pending_prompt": "What are the key findings in the thesis?",
+            "pending_prompt_document": "master_thesis_2026.pdf",
+        }
+
+        with patch("verilume.ui.chat.st.session_state", session_state):
+            prompt, focus = _consume_pending_prompt()
+
+        self.assertEqual(prompt, "What are the key findings in the thesis?")
+        self.assertEqual(focus, "master_thesis_2026.pdf")
+        self.assertNotIn("pending_prompt_document", session_state)
 
     def test_partition_message_history_keeps_recent_messages_visible(self) -> None:
         archived_timestamp = (datetime.now().astimezone() - timedelta(days=4)).isoformat(
@@ -300,6 +334,89 @@ class ChatInteractionTests(unittest.TestCase):
             _answer_origin(response),
             ("\U0001f9e0 AI Knowledge", "Low", "Insufficient evidence"),
         )
+
+    def _gov_web_response(self, diagnostics: dict) -> RAGResponse:
+        return RAGResponse(
+            answer="Xavier Bettel is the prime minister [W1].",
+            local_sources=[],
+            web_sources=[
+                WebSource(
+                    label="W1",
+                    title="BETTEL Xavier - The Luxembourg Government",
+                    url="https://gouvernement.lu/en/gouvernement/xavier-bettel.html",
+                    content="Government profile.",
+                )
+            ],
+            used_web=True,
+            confidence="web-assisted",
+            diagnostics=diagnostics,
+        )
+
+    def test_confidence_capped_to_medium_on_freshness_conflict(self) -> None:
+        # A government source alone rates "High"; a flagged freshness conflict
+        # (the Luxembourg PM case) must pull the badge down to Medium.
+        response = self._gov_web_response(
+            {"source_agreement": "freshness_conflict", "requires_date_reconciliation": True}
+        )
+        _, confidence, _ = _answer_origin(response)
+        self.assertEqual(confidence, "Medium")
+
+    def test_confidence_capped_to_medium_when_local_older_than_web(self) -> None:
+        response = self._gov_web_response(
+            {"local_is_older_than_web": True, "time_sensitive": True}
+        )
+        _, confidence, _ = _answer_origin(response)
+        self.assertEqual(confidence, "Medium")
+
+    def test_confidence_capped_to_medium_when_answer_unsupported(self) -> None:
+        # "unsupported" from the heuristic verifier is an uncertainty signal,
+        # not proof of error, so it caps to Medium (strict mode forces low
+        # upstream in the backend when the user opts in).
+        response = self._gov_web_response({"answer_verification_status": "unsupported"})
+        _, confidence, _ = _answer_origin(response)
+        self.assertEqual(confidence, "Medium")
+
+    def test_confidence_capped_for_time_sensitive_single_source(self) -> None:
+        response = self._gov_web_response(
+            {"time_sensitive": True, "source_agreement": "single_source"}
+        )
+        self.assertEqual(_cap_display_confidence("High", response), "Medium")
+
+    def test_confidence_low_when_all_claims_unverified(self) -> None:
+        # The screenshot case: an AI-knowledge answer whose claim verification
+        # found 0/11 supported must badge Low, not the AI-route default Medium.
+        response = RAGResponse(
+            answer="A fluent but entirely unverified answer.",
+            local_sources=[],
+            web_sources=[],
+            used_web=False,
+            confidence="model-only",
+            diagnostics={
+                "used_model_knowledge": True,
+                "claim_support_summary": {
+                    "supported": 0,
+                    "weakly_supported": 0,
+                    "unsupported": 11,
+                },
+            },
+        )
+        _, confidence, _ = _answer_origin(response)
+        self.assertEqual(confidence, "Low")
+
+    def test_confidence_preserved_when_sources_agree_and_no_conflict(self) -> None:
+        response = self._gov_web_response(
+            {"source_agreement": "multiple_sources", "requires_date_reconciliation": True}
+        )
+        _, confidence, _ = _answer_origin(response)
+        self.assertEqual(confidence, "High")
+
+    def test_cap_display_confidence_passes_through_non_ordinal_labels(self) -> None:
+        response = self._gov_web_response({"source_agreement": "freshness_conflict"})
+        self.assertEqual(_cap_display_confidence("N/A", response), "N/A")
+
+    def test_cap_display_confidence_never_raises_confidence(self) -> None:
+        response = self._gov_web_response({"source_agreement": "multiple_sources"})
+        self.assertEqual(_cap_display_confidence("Low", response), "Low")
 
     def test_answer_origin_uses_hybrid_when_local_and_web_are_used(self) -> None:
         response = RAGResponse(
@@ -513,8 +630,10 @@ class ChatInteractionTests(unittest.TestCase):
         grouped = _group_web_source_rows(rows)
 
         self.assertEqual(grouped[0][0], "\U0001f393 University Sources (2)")
-        self.assertEqual(len(grouped[0][1]), 2)
+        self.assertEqual(grouped[0][1], "University")
+        self.assertEqual(len(grouped[0][2]), 2)
         self.assertEqual(grouped[1][0], "\U0001f464 Social Sources (1)")
+        self.assertEqual(grouped[1][1], "Social media")
 
     def test_inline_sources_do_not_create_nested_expanders(self) -> None:
         response = RAGResponse(
@@ -577,35 +696,45 @@ class ChatInteractionTests(unittest.TestCase):
                 }
             },
         )
-        expander_depth = 0
-
-        class GuardedExpander:
-            def __enter__(self) -> "GuardedExpander":
-                nonlocal expander_depth
-                expander_depth += 1
-                return self
-
-            def __exit__(self, exc_type, exc, traceback) -> bool:
-                nonlocal expander_depth
-                expander_depth -= 1
-                return False
-
-        def guarded_expander(*_args, **_kwargs) -> GuardedExpander:
-            if expander_depth:
-                raise AssertionError("nested expander")
-            return GuardedExpander()
-
+        # The benchmark now lives behind a button that opens a dialog; the
+        # per-answer flow must only show a teaser + button, never an expander.
         with (
-            patch("verilume.ui.chat.st.expander", side_effect=guarded_expander) as expander,
+            patch("verilume.ui.chat.st.expander") as expander,
+            patch("verilume.ui.chat.st.button", return_value=False) as button,
+            patch("verilume.ui.chat.st.markdown"),
+        ):
+            _render_benchmark_report(response, "test")
+
+        self.assertEqual(expander.call_count, 0)
+        self.assertEqual(button.call_count, 1)
+
+        # The dialog body renders the mode answers directly, with no expander.
+        with (
+            patch("verilume.ui.chat.st.expander") as body_expander,
             patch("verilume.ui.chat.st.dataframe"),
             patch("verilume.ui.chat.st.caption"),
             patch("verilume.ui.chat.st.markdown") as markdown,
         ):
-            _render_benchmark_report(response)
+            _render_benchmark_body(response.diagnostics["benchmark_report"])
 
-        self.assertEqual(expander.call_count, 1)
+        self.assertEqual(body_expander.call_count, 0)
         markdown.assert_any_call("**Full answer**")
         markdown.assert_any_call("Full answer [S1]")
+
+
+class CopyButtonSecurityTests(unittest.TestCase):
+    def test_copy_button_payload_cannot_break_out_of_script_tag(self) -> None:
+        from verilume.ui.chat import _render_copy_answer_button
+
+        malicious = 'Before</script><img src=x onerror=alert(1)>after'
+        with patch("verilume.ui.chat.components.html") as html_mock:
+            _render_copy_answer_button(malicious, 1)
+
+        payload = html_mock.call_args[0][0]
+        # The raw close-tag sequence must never appear inside the embedded JSON;
+        # "<\/" is equivalent inside a JS string but inert to the HTML parser.
+        self.assertNotIn("</script><img", payload)
+        self.assertIn("<\\/script>", payload)
 
 
 class BackgroundGenerationTests(unittest.TestCase):

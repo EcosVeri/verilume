@@ -28,12 +28,14 @@ from verilume.core.embeddings import EmbeddingService
 from verilume.core.equation_repair import repair_math_text
 from verilume.core.formula_extraction import extract_formulas, formula_to_text
 from verilume.core.formula_store import FormulaStore
+from verilume.core.knowledge_graph import KnowledgeGraph
 from verilume.core.ocr_blocks import OCRBlock, OCRBlockStore, page_text_block
 from verilume.core.ocr_cleaning import clean_ocr_text
 from verilume.core.retrieval import ChromaRetriever
 from verilume.core.schemas import DocumentChunk, DocumentMetadata, IngestResult
 from verilume.core.structured_document_store import StructuredDocumentStore
 from verilume.core.structured_ocr import StructuredDocument, extract_structured_document
+from verilume.core.table_store import TableStore
 from verilume.settings import AppSettings, ensure_app_dirs
 
 LOGGER = logging.getLogger(__name__)
@@ -1102,11 +1104,13 @@ class DocumentIngestor:
             manifest = load_manifest(self.settings.manifest_path)
             self._remove_missing_documents(manifest)
             write_manifest(self.settings.manifest_path, manifest)
+            self._reconcile_specialized_stores(set())
             return IngestResult(0, 0, 0, 0, 0)
 
         manifest = {} if force_all else load_manifest(self.settings.manifest_path)
         self._remove_missing_documents(manifest)
         manifest = {path: value for path, value in manifest.items() if Path(path).exists()}
+        self._reconcile_specialized_stores({path.name for path in files})
         force_reindex = force_all or self.retriever.count() == 0
         pending: list[tuple[Path, str]] = []
         skipped = 0
@@ -1247,6 +1251,21 @@ class DocumentIngestor:
             self.retriever.delete_document(stored_path)
             self._delete_specialized_document(Path(stored_path).name)
             manifest.pop(stored_path, None)
+
+    def _reconcile_specialized_stores(self, valid_documents: set[str]) -> None:
+        """Drop knowledge-graph and table content for documents no longer indexed.
+
+        The graph is populated lazily at query time and is keyed only by document
+        name, so it can accumulate entries for documents that were removed while
+        it was not in scope. Pruning it against the live corpus on every build
+        makes stale evidence self-heal instead of resurfacing through GraphRAG.
+        """
+        knowledge_graph = KnowledgeGraph(self.settings.knowledge_graph_path)
+        for document in knowledge_graph.documents() - valid_documents:
+            knowledge_graph.delete_document(document)
+        table_store = TableStore(self.settings.table_store_dir)
+        for document in table_store.documents() - valid_documents:
+            table_store.delete_document(document)
 
     def _seed_staging_from_live(
         self,
@@ -1389,6 +1408,13 @@ class DocumentIngestor:
         self.formula_store.delete_document(document)
         self.ocr_block_store.delete_document(document)
         self.structured_store.delete_document(document)
+        # The knowledge graph and table store are keyed by document name and are
+        # populated outside the ingestor (the graph is built lazily at query
+        # time), so purge them here too — otherwise a removed document keeps
+        # resurfacing through GraphRAG. Opening these is a cheap idempotent
+        # SQLite connect.
+        KnowledgeGraph(self.settings.knowledge_graph_path).delete_document(document)
+        TableStore(self.settings.table_store_dir).delete_document(document)
 
 
 @contextmanager

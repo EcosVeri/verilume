@@ -59,6 +59,40 @@ class KnowledgeGraphTests(unittest.TestCase):
 
         self.assertIn("Bayesian inference", names)
 
+    def test_delete_document_removes_its_evidence_but_keeps_shared_entities(self) -> None:
+        with TemporaryDirectory() as tmp:
+            graph = KnowledgeGraph(Path(tmp) / "knowledge_graph.sqlite")
+            # A shared person appears in both documents; a topic only in the diploma.
+            graph.index_chunk(
+                "Damian Mingo Ndiwago completed the diploma in statistics with distinction.",
+                document="diploma.pdf",
+                chunk_id="diploma-1",
+            )
+            graph.index_chunk(
+                "Damian Mingo Ndiwago studies Bayesian inference at University of Luxembourg.",
+                document="thesis.pdf",
+                chunk_id="thesis-1",
+            )
+            self.assertIn("diploma.pdf", graph.documents())
+
+            graph.delete_document("diploma.pdf")
+
+            # The diploma is gone from the graph and from query results...
+            self.assertNotIn("diploma.pdf", graph.documents())
+            context = graph.graph_context_for_query("Damian Mingo Ndiwago")
+            self.assertNotIn("diploma.pdf", context.related_documents)
+            self.assertNotIn("diploma-1", context.related_chunks)
+            # ...but the shared person is preserved via the surviving document.
+            self.assertTrue(graph.search_entity("Damian Mingo Ndiwago"))
+            self.assertIn("thesis.pdf", graph.documents())
+
+    def test_delete_document_is_a_noop_for_unknown_document(self) -> None:
+        with TemporaryDirectory() as tmp:
+            graph = KnowledgeGraph(Path(tmp) / "knowledge_graph.sqlite")
+            graph.index_chunk("Bayesian inference is discussed.", document="thesis.pdf")
+            graph.delete_document("does-not-exist.pdf")
+            self.assertIn("thesis.pdf", graph.documents())
+
 
 if __name__ == "__main__":
     unittest.main()

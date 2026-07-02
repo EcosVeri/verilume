@@ -37,6 +37,19 @@ class TableRetrievalTests(unittest.TestCase):
             self.assertEqual(matches[0].document, "apartments.csv")
             self.assertIn("price", matches[0].columns)
 
+    def test_delete_document_removes_tables_and_frame_files(self) -> None:
+        with TemporaryDirectory() as tmp:
+            store = TableStore(Path(tmp) / "tables")
+            metadata = store.add_table(pd.read_csv(StringIO(CSV_TEXT)), document="apartments.csv")
+            self.assertIn("apartments.csv", store.documents())
+            self.assertTrue(metadata.dataframe_path.exists())
+
+            store.delete_document("apartments.csv")
+
+            self.assertNotIn("apartments.csv", store.documents())
+            self.assertEqual(store.list_tables(), [])
+            self.assertFalse(metadata.dataframe_path.exists())
+
     def test_table_agent_computes_average_without_inventing_values(self) -> None:
         with TemporaryDirectory() as tmp:
             store = TableStore(Path(tmp) / "tables")

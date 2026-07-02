@@ -197,6 +197,38 @@ class KnowledgeGraph:
                 entities.append(entity)
         return entities
 
+    def delete_document(self, document: str) -> None:
+        """Purge everything a document contributed to the graph.
+
+        Removes the document's mentions and relations, then drops any entity
+        that is now orphaned (no remaining mention or relation). Entities that
+        are still referenced by other documents survive, so shared people or
+        topics are never lost when one source is removed.
+        """
+
+        if not document:
+            return
+        with self._connect() as conn:
+            conn.execute("DELETE FROM mentions WHERE document = ?", (document,))
+            conn.execute("DELETE FROM relations WHERE document = ?", (document,))
+            conn.execute(
+                """
+                DELETE FROM entities
+                WHERE id NOT IN (SELECT entity_id FROM mentions)
+                  AND id NOT IN (SELECT source_id FROM relations)
+                  AND id NOT IN (SELECT target_id FROM relations)
+                """
+            )
+
+    def documents(self) -> set[str]:
+        """Return every document name currently referenced by the graph."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT document FROM mentions WHERE document IS NOT NULL AND document != '' "
+                "UNION SELECT document FROM relations WHERE document IS NOT NULL AND document != ''"
+            ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def search_entity(self, name: str) -> list[Entity]:
         normalized = normalize_name(name)
         pattern = f"%{normalized}%"

@@ -16,6 +16,7 @@ class ClaimSupport:
     supporting_source_ids: list[str]
     support_score: float
     verdict: str
+    date_grounded: bool = True
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -23,6 +24,7 @@ class ClaimSupport:
             "supporting_source_ids": self.supporting_source_ids,
             "support_score": round(self.support_score, 4),
             "verdict": self.verdict,
+            "date_grounded": self.date_grounded,
         }
 
 
@@ -37,6 +39,7 @@ def verify_claim_support(
         return []
 
     source_texts = _source_texts(local_sources, web_sources)
+    source_dates = set().union(*(_calendar_dates(text) for text in source_texts.values())) if source_texts else set()
     supports: list[ClaimSupport] = []
     for claim in claims:
         claim_terms = _terms(claim.text)
@@ -51,12 +54,25 @@ def verify_claim_support(
         scored_sources.sort(key=lambda item: item[1], reverse=True)
         best_score = scored_sources[0][1] if scored_sources else 0.0
         supporting_ids = [label for label, score in scored_sources[:3] if score >= 0.18]
+        verdict = _verdict(best_score, cited_labels, supporting_ids)
+
+        # A specific calendar date is only credible if it appears in a source.
+        # Term-overlap scoring cannot tell a fabricated date (e.g. one stitched
+        # together from unrelated snippets) from a genuinely cited one, so any
+        # asserted full date that is absent from every source downgrades the
+        # verdict rather than being reported as supported.
+        claim_dates = _calendar_dates(claim.text)
+        date_grounded = not claim_dates or bool(claim_dates & source_dates)
+        if not date_grounded:
+            verdict = _downgrade_ungrounded_date(verdict)
+
         supports.append(
             ClaimSupport(
                 claim=claim.text,
                 supporting_source_ids=supporting_ids,
                 support_score=best_score,
-                verdict=_verdict(best_score, cited_labels, supporting_ids),
+                verdict=verdict,
+                date_grounded=date_grounded,
             )
         )
     return supports
@@ -101,6 +117,76 @@ def _support_score(claim_terms: set[str], source_text: str) -> float:
     coverage = overlap / max(1, len(claim_terms))
     density = overlap / max(1, min(len(source_terms), len(claim_terms) * 4))
     return min(1.0, coverage * 0.78 + density * 0.22)
+
+
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+# "1 October 2025" / "14 Oct 2021"
+_DAY_MONTH_YEAR = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})\b"
+)
+# "October 1, 2025" / "Oct 1 2025"
+_MONTH_DAY_YEAR = re.compile(
+    r"\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b"
+)
+# ISO "2025-10-01"
+_ISO_DATE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+
+
+def _calendar_dates(text: str) -> set[tuple[int, int, int]]:
+    """Return normalized ``(year, month, day)`` tuples for full dates in ``text``.
+
+    Only day+month+year dates are captured; bare years or month/year pairs are
+    intentionally ignored, so grounding never over-triggers on partial matches.
+    """
+
+    if not text:
+        return set()
+    dates: set[tuple[int, int, int]] = set()
+    for day, month_name, year in _DAY_MONTH_YEAR.findall(text):
+        _add_date(dates, year, month_name, day)
+    for month_name, day, year in _MONTH_DAY_YEAR.findall(text):
+        _add_date(dates, year, month_name, day)
+    for year, month, day in _ISO_DATE.findall(text):
+        _add_numeric_date(dates, year, month, day)
+    return dates
+
+
+def _add_date(dates: set[tuple[int, int, int]], year: str, month_name: str, day: str) -> None:
+    month = _MONTHS.get(month_name.lower()[:3])
+    if month is None:
+        return
+    _add_numeric_date(dates, year, str(month), day)
+
+
+def _add_numeric_date(dates: set[tuple[int, int, int]], year: str, month: str, day: str) -> None:
+    try:
+        y, m, d = int(year), int(month), int(day)
+    except ValueError:
+        return
+    if 1 <= m <= 12 and 1 <= d <= 31:
+        dates.add((y, m, d))
+
+
+def _downgrade_ungrounded_date(verdict: str) -> str:
+    if verdict == "supported":
+        return "weakly_supported"
+    if verdict == "weakly_supported":
+        return "unsupported"
+    return verdict
 
 
 def _verdict(score: float, cited_labels: set[str], supporting_ids: Sequence[str]) -> str:

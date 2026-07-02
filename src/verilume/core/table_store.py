@@ -91,6 +91,30 @@ class TableStore:
             indexed.append(self.add_table(df, document=path.name, source_path=path))
         return indexed
 
+    def delete_document(self, document: str) -> None:
+        """Remove every table (and its cached frame) extracted from a document."""
+        if not document:
+            return
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT table_id FROM tables WHERE document = ?", (document,)
+            ).fetchall()
+            for row in rows:
+                frame = self.frames_dir / f"{row['table_id']}.csv"
+                try:
+                    frame.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            conn.execute("DELETE FROM tables WHERE document = ?", (document,))
+
+    def documents(self) -> set[str]:
+        """Return every document name currently backing a stored table."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT document FROM tables WHERE document IS NOT NULL AND document != ''"
+            ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def list_tables(self) -> list[TableMetadata]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM tables ORDER BY created_at DESC").fetchall()

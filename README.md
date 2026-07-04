@@ -35,7 +35,7 @@ The public EcosVeri release is planned after the repository transfer. Until then
 
 ## Demo
 
-Demo GIF coming soon. The first recording will show PDF upload, indexing, question answering, citation review, and export.
+![Verilume demo showing the first-run setup checklist, source controls, upload action, export controls, example prompts, and chat input.](docs/assets/verilume-demo.gif)
 
 ## Why Verilume?
 
@@ -66,10 +66,6 @@ Everything is designed around privacy, transparency and reproducible answers.
 </table>
 
 ## Screenshots
-
-### First Run
-
-![Verilume first-run workspace showing setup progress, empty document state, upload action, export controls, example prompts, and chat input.](docs/assets/verilume-first-run-dark.png)
 
 ### Dark Mode
 

@@ -431,34 +431,64 @@ def _render_toolbar(settings: AppSettings) -> None:
             )
 
 
+# Welcome cards double as one-click example prompts so the app feels
+# interactive before any documents are indexed.
+_WELCOME_ACTIONS = (
+    (
+        "📄 Search documents",
+        "Find local facts and citations.",
+        "What are the key findings in my documents?",
+    ),
+    (
+        "📚 Summarise files",
+        "Turn long PDFs into clear briefs.",
+        "Summarise my uploaded documents in a short brief.",
+    ),
+    (
+        "⚖ Compare evidence",
+        "Separate local, AI, and web support.",
+        "Compare local, AI, and web evidence for the main claims in my documents.",
+    ),
+    (
+        "🌍 Current facts",
+        "Use web sources when enabled.",
+        "What are the latest developments in AI research this month?",
+    ),
+)
+
+
 def _render_welcome_screen() -> None:
     st.markdown(
         """
 <div class="veri-welcome">
   <div class="veri-welcome-kicker">Welcome</div>
   <div class="veri-welcome-title">Search documents, research sources, and compare evidence.</div>
-  <div class="veri-welcome-grid">
-    <div class="veri-welcome-cell">
-      <div class="veri-welcome-cell-title">📄 Search documents</div>
-      <div class="veri-welcome-cell-desc">Find local facts and citations.</div>
-    </div>
-    <div class="veri-welcome-cell">
-      <div class="veri-welcome-cell-title">📚 Summarise files</div>
-      <div class="veri-welcome-cell-desc">Turn long PDFs into clear briefs.</div>
-    </div>
-    <div class="veri-welcome-cell">
-      <div class="veri-welcome-cell-title">⚖ Compare evidence</div>
-      <div class="veri-welcome-cell-desc">Separate local, AI, and web support.</div>
-    </div>
-    <div class="veri-welcome-cell">
-      <div class="veri-welcome-cell-title">🌍 Current facts</div>
-      <div class="veri-welcome-cell-desc">Use web sources when enabled.</div>
-    </div>
-  </div>
+  <div class="veri-welcome-hint">Try an example — click a card to run it.</div>
 </div>
         """,
         unsafe_allow_html=True,
     )
+    columns = st.columns(len(_WELCOME_ACTIONS))
+    for index, (column, action) in enumerate(zip(columns, _WELCOME_ACTIONS, strict=True)):
+        title, description, example = action
+        with column:
+            st.markdown(
+                '<div class="veri-dark-button-anchor veri-welcome-action-wrap"></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                title,
+                key=f"welcome-action-{index}",
+                help=f'Ask: "{example}"',
+                use_container_width=True,
+            ):
+                st.session_state["pending_prompt"] = example
+                st.session_state.pop("pending_prompt_document", None)
+                st.rerun()
+            st.markdown(
+                f'<div class="veri-welcome-cell-desc">{escape(description)}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def _loading_stage_html(label: str) -> str:

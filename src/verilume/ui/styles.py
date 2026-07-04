@@ -72,6 +72,7 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
                 "0 0 0 3px rgba(199, 138, 26, .18), "
                 "0 8px 26px rgba(31, 41, 55, .16)"
             ),
+            "veri-command-border": "rgba(0, 102, 204, .38)",
             "veri-tooltip-bg": "#ffffff",
             "veri-tooltip-text": "#1c2430",
             "veri-tooltip-border": "#cfd6df",
@@ -118,6 +119,7 @@ def _theme_tokens(appearance: str) -> dict[str, str]:
                 "0 0 0 3px rgba(255, 200, 87, .16), "
                 "0 8px 30px rgba(0, 0, 0, .28)"
             ),
+            "veri-command-border": "rgba(54, 209, 196, .42)",
             "veri-tooltip-bg": "#14171d",
             "veri-tooltip-text": "#f5f2e8",
             "veri-tooltip-border": "#ffc857",
@@ -684,6 +686,7 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
 .veri-dot.amber { background: var(--veri-amber); }
 .veri-dot.coral { background: var(--veri-coral); }
 .veri-dot.green { background: var(--veri-green); }
+.veri-dot.muted { background: var(--veri-muted); }
 
 [data-testid="stMetric"] {
   background: var(--veri-panel) !important;
@@ -705,8 +708,15 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
 .veri-metric-grid {
   display: grid;
   gap: .75rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin: .25rem 0 .85rem 0;
+}
+
+/* Text-valued metric cards (model names) get a smaller, wrappable value. */
+.veri-metric-value-text {
+  font-size: .92rem !important;
+  line-height: 1.25 !important;
+  overflow-wrap: anywhere;
 }
 
 .veri-metric-card {
@@ -855,7 +865,7 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
 
 [data-testid="stChatInput"] {
   background: var(--veri-input-bg) !important;
-  border: 1px solid var(--veri-line) !important;
+  border: 1px solid var(--veri-command-border) !important;
   border-radius: 999px !important;
   animation: veri-soft-pulse 3.6s ease-in-out infinite;
   bottom: var(--veri-command-bottom) !important;
@@ -1435,6 +1445,20 @@ button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
   line-height: 1.45;
 }
 
+/* Big first-run upload CTA under the empty state. */
+.veri-upload-cta-wrap {
+  height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+div:has(.veri-upload-cta-wrap) + div [data-testid="stButton"] button {
+  border-radius: 10px !important;
+  font-size: 1.02rem !important;
+  font-weight: 780 !important;
+  min-height: 3.1rem !important;
+}
+
 .veri-recommendation-card {
   border: 1px solid rgba(255, 200, 87, 0.32);
   border-radius: 8px;
@@ -1899,6 +1923,21 @@ div[data-baseweb="menu"] li:hover {
   color: var(--veri-muted);
   font-size: .76rem;
   line-height: 1.3;
+}
+
+.veri-welcome-hint {
+  color: var(--veri-muted);
+  font-size: .82rem;
+  margin-top: -.4rem;
+}
+
+/* Welcome action cards — clickable example prompts under the welcome panel. */
+.veri-welcome-action-wrap + div [data-testid="stButton"] button,
+div:has(.veri-welcome-action-wrap) + div [data-testid="stButton"] button {
+  border-radius: 8px !important;
+  justify-content: flex-start !important;
+  min-height: 2.7rem !important;
+  text-align: left !important;
 }
 
 /* Welcome cell — structured title + description blocks (fix 4B) */

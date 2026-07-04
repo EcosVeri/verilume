@@ -19,7 +19,9 @@ from verilume.settings import AppSettings
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_DASHBOARD_COLLAPSED = True
+# Open on first launch so new users immediately see the backend at a glance
+# (documents, pages, chunks, models); auto-collapses once a conversation starts.
+DEFAULT_DASHBOARD_COLLAPSED = False
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -76,7 +78,7 @@ def render_dashboard(
     if dashboard_collapsed:
         return
 
-    render_metric_cards(library_stats)
+    render_metric_cards(library_stats, settings)
 
     doc_col, activity_col, prompt_col = st.columns(3)
     with doc_col:
@@ -92,23 +94,32 @@ def render_dashboard(
         render_suggested_prompts(effective_prompts)
 
 
-def render_metric_cards(library_stats: dict[str, int]) -> None:
-    cards = (
-        ("\U0001f4c4", library_stats.get("uploaded_documents", 0), "Documents"),
-        ("\U0001f4da", library_stats.get("pdf_pages", 0), "Pages"),
-        ("\U0001f9e9", library_stats.get("chunks_indexed", 0), "Chunks"),
-    )
+def render_metric_cards(library_stats: dict[str, int], settings: AppSettings | None = None) -> None:
+    cards: list[tuple[str, str, str, bool]] = [
+        ("\U0001f4c4", f"{int(library_stats.get('uploaded_documents', 0) or 0):,}", "Documents", False),
+        ("\U0001f4da", f"{int(library_stats.get('pdf_pages', 0) or 0):,}", "Pages", False),
+        ("\U0001f9e9", f"{int(library_stats.get('chunks_indexed', 0) or 0):,}", "Chunks", False),
+    ]
+    if settings is not None:
+        cards.append(("\U0001f9ec", _short_model_name(settings.embed_model), "Embedding", True))
+        cards.append(("\U0001f916", _short_model_name(settings.active_generation_model()), "LLM", True))
     rendered = "".join(
         (
             '<div class="veri-metric-card">'
             f'<div class="veri-metric-icon">{icon}</div>'
-            f'<div class="veri-metric-value">{int(value or 0):,}</div>'
+            f'<div class="veri-metric-value{" veri-metric-value-text" if is_text else ""}">{escape(value)}</div>'
             f'<div class="veri-metric-label">{label}</div>'
             "</div>"
         )
-        for icon, value, label in cards
+        for icon, value, label, is_text in cards
     )
     st.markdown(f'<div class="veri-metric-grid">{rendered}</div>', unsafe_allow_html=True)
+
+
+def _short_model_name(model_id: str) -> str:
+    """Display-only model name: drop the org prefix from IDs like 'BAAI/bge-small-en-v1.5'."""
+    name = str(model_id or "").strip().rsplit("/", maxsplit=1)[-1]
+    return name or "Not set"
 
 
 def render_recent_documents(recent_documents: Sequence[str]) -> None:
@@ -187,13 +198,25 @@ def render_empty_document_state(library_stats: dict[str, int]) -> None:
 <div class="veri-empty-state">
   <div class="veri-empty-state-title">No local documents indexed yet</div>
   <div class="veri-empty-state-body">
-    Upload documents in the sidebar to ground answers in your own files.
+    Upload documents to ground answers in your own files.
     Web research and model knowledge remain available when configured.
   </div>
 </div>
         """,
         unsafe_allow_html=True,
     )
+    _left, center, _right = st.columns([1, 2, 1])
+    with center:
+        st.markdown('<div class="veri-upload-cta-wrap"></div>', unsafe_allow_html=True)
+        if st.button(
+            "\U0001f4c4 Upload your first document",
+            key="empty-state-upload-cta",
+            type="primary",
+            use_container_width=True,
+            help="Open the Knowledge Base panel in the sidebar to upload files.",
+        ):
+            st.session_state["focus_sidebar_section"] = "documents"
+            st.rerun()
 
 
 def recent_activity_from_messages(messages: Sequence[dict[str, Any]], limit: int = 3) -> list[str]:

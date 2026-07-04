@@ -9,12 +9,21 @@ from verilume.settings import AppSettings, save_user_config
 
 def render_header(settings: AppSettings, stats: dict[str, int]) -> None:
     if not settings.enable_web_search:
-        web_state = "Web off"
+        web_state, web_dot = "Web off", "muted"
     elif settings.web_search_ready():
-        web_state = f"{settings.web_search_provider_label()} ready"
+        web_state, web_dot = f"{settings.web_search_provider_label()} ready", "green"
     else:
-        web_state = f"{settings.web_search_provider_label()} setup needed"
-    token_state = "HF ready" if settings.hf_token else "HF token needed"
+        web_state, web_dot = f"{settings.web_search_provider_label()} setup needed", "amber"
+    model_ready = settings.generation_ready()
+    if settings.generation_backend == "ollama":
+        token_state = "Ollama ready" if model_ready else "Ollama model needed"
+    else:
+        token_state = "HF ready" if model_ready else "HF token needed"
+    model_dot = "green" if model_ready else "amber"
+    docs = stats.get("uploaded_documents", 0)
+    chunks = stats.get("chunks_indexed", 0)
+    docs_dot = "green" if docs else "amber"
+    chunks_dot = "green" if chunks else "amber"
     header_col, toggle_col = st.columns([0.88, 0.12], vertical_alignment="top")
     with header_col:
         st.markdown(
@@ -22,12 +31,12 @@ def render_header(settings: AppSettings, stats: dict[str, int]) -> None:
 <div class="veri-header">
   <div class="veri-brand">Verilume</div>
   <div class="veri-title">{settings.app_icon} {settings.app_title}</div>
-  <div class="veri-subtitle">Answers powered by local retrieval, trusted AI generation, and transparent sources.</div>
+  <div class="veri-subtitle">Search documents, verify evidence, and compare sources with transparent AI.</div>
   <div class="veri-pill-row">
-    <span class="veri-pill"><span class="veri-dot green"></span>{token_state}</span>
-    <span class="veri-pill"><span class="veri-dot amber"></span>{stats.get("uploaded_documents", 0)} docs</span>
-    <span class="veri-pill"><span class="veri-dot"></span>{stats.get("chunks_indexed", 0)} chunks</span>
-    <span class="veri-pill"><span class="veri-dot coral"></span>{web_state}</span>
+    <span class="veri-pill"><span class="veri-dot {model_dot}"></span>{token_state}</span>
+    <span class="veri-pill"><span class="veri-dot {docs_dot}"></span>{docs} docs</span>
+    <span class="veri-pill"><span class="veri-dot {chunks_dot}"></span>{chunks} chunks</span>
+    <span class="veri-pill"><span class="veri-dot {web_dot}"></span>{web_state}</span>
   </div>
 </div>
         """,

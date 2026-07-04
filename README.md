@@ -67,6 +67,10 @@ Everything is designed around privacy, transparency and reproducible answers.
 
 ## Screenshots
 
+### First Run
+
+![Verilume first-run workspace showing setup progress, empty document state, upload action, export controls, example prompts, and chat input.](docs/assets/verilume-first-run-dark.png)
+
 ### Dark Mode
 
 ![Verilume dark launch screen showing the sidebar, status pills, research actions, and chat input.](docs/assets/verilume-launch-dark.png)

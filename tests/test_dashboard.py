@@ -12,8 +12,10 @@ from verilume.ui.dashboard import (
 
 
 class DashboardTests(unittest.TestCase):
-    def test_dashboard_defaults_to_collapsed_expand_action(self) -> None:
-        self.assertTrue(DEFAULT_DASHBOARD_COLLAPSED)
+    def test_dashboard_defaults_to_expanded_on_first_launch(self) -> None:
+        # Open by default so new users see the backend at a glance; it still
+        # auto-collapses once a conversation starts (see render_dashboard).
+        self.assertFalse(DEFAULT_DASHBOARD_COLLAPSED)
 
     def test_recent_activity_uses_latest_user_messages(self) -> None:
         messages = [

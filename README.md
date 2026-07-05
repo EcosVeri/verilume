@@ -1,41 +1,63 @@
 # Verilume
 
-> **Evidence First. Answers Second.**
->
-> A local-first, evidence-first AI research assistant. Verilume doesn't just answer questions — it evaluates evidence, verifies claims, calibrates confidence, and shows you exactly why each source won.
+**Privacy-first AI research assistant for your local documents.**
 
-<p align="center">
-  <a href="#downloads"><strong>Download macOS</strong></a>
-  · <a href="#install-from-github">Install from GitHub</a>
-  · <a href="#downloads">Windows (Coming Soon)</a>
-  · <a href="#documentation">Documentation (Coming Soon)</a>
-  · <a href="#about-ecosveri">Website (Coming Soon)</a>
-</p>
+Search PDFs, Office documents, scanned files, and images with hybrid retrieval, evidence verification, local LLMs, and optional web search — as a desktop app or a Python package that runs entirely on your machine.
+
+> **Evidence First. Answers Second.** Verilume doesn't just answer questions — it evaluates evidence, verifies claims, calibrates confidence, and shows you exactly why each source won.
 
 [![CI](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-green)
-![macOS](https://img.shields.io/badge/macOS-planned-black)
+![macOS](https://img.shields.io/badge/macOS-available-black)
 ![Windows Soon](https://img.shields.io/badge/Windows-soon-lightgrey)
-![PyPI Soon](https://img.shields.io/badge/PyPI-soon-blue)
+![PyPI Soon](https://img.shields.io/badge/PyPI-this%20week-blue)
 ![Active Development](https://img.shields.io/badge/status-active%20development-f59e0b)
 
-Most RAG applications answer questions. Verilume **evaluates evidence**: hybrid retrieval (BM25 + embeddings + reranking) over your local documents, optional web search grouped by source authority (government, research, university, news), claim-level verification, calibrated confidence that can never outrank the evidence, and a benchmark mode that compares Local vs AI vs Web vs Full retrieval on any question — all in a privacy-first desktop app.
+<p align="center">
+  <a href="#downloads"><strong>Download macOS</strong></a>
+  · <a href="#quick-start">Quick Start</a>
+  · <a href="#documentation">Documentation</a>
+  · <a href="#roadmap">Roadmap</a>
+  · <a href="#about-ecosveri">EcosVeri</a>
+</p>
+
+## 🚀 Version 1.0 Launch
+
+Verilume is now available as an open-source Python package and desktop app.
+
+The project is being transferred to the **EcosVeri** organization, with future releases, documentation, and related apps hosted under the EcosVeri ecosystem. The PyPI package ships this week; until then, install from GitHub below.
+
+## Demo
+
+![Verilume demo showing the first-run setup checklist, source controls, upload action, export controls, example prompts, and chat input.](docs/assets/verilume-demo-v2.gif)
+
+- 🔒 **Private by design** — documents, embeddings, and the vector database stay on your machine.
+- 🧾 **Evidence-verified answers** — claim-level support checks and calibrated confidence on every answer.
+- 🔍 **Hybrid retrieval** — BM25 + embeddings + reranking, with optional authority-grouped web search.
+- 📊 **Benchmark mode** — compare Local vs AI vs Web vs Full retrieval on any question.
+
+## Quick Start
+
+**Python package** (PyPI release coming this week — install from GitHub until then):
+
+```bash
+python -m pip install "verilume @ git+https://github.com/DamingoNdiwa/verilume.git@main"
+verilume run
+```
+
+**Desktop app**: download the latest `Verilume-macOS-*.zip` from [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases), unzip, and open `Verilume.app`.
+
+Then upload documents, build the knowledge base, and ask questions — setup takes about a minute.
 
 ## Downloads
 
 | Platform | Status |
 | --- | --- |
-| macOS | Test builds are published on GitHub Releases |
+| macOS | Available on [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases) |
 | Windows | Coming Soon |
 | Linux | Coming Soon |
-| Python package | Install from GitHub while PyPI is pending |
-
-The public EcosVeri release is planned after the repository transfer. Until then, use this GitHub repository for test builds.
-
-## Demo
-
-![Verilume demo showing the first-run setup checklist, source controls, upload action, export controls, example prompts, and chat input.](docs/assets/verilume-demo-v2.gif)
+| Python package | PyPI this week — [install from GitHub](#install-from-github) until then |
 
 ## Why Verilume?
 
@@ -54,16 +76,28 @@ Everything is designed around privacy, transparency and reproducible answers.
 
 <table>
   <tr>
-    <td><strong>Privacy First</strong><br>Runs locally without uploading files.</td>
-    <td><strong>Evidence Verification</strong><br>Claim-level support checks, agreement, conflicts, and calibrated confidence on every answer.</td>
-    <td><strong>Hybrid Search</strong><br>BM25 + embeddings + reranking over local documents, plus optional authority-grouped web search.</td>
+    <td>🔒 <strong>Privacy First</strong><br>Runs locally without uploading files.</td>
+    <td>🧾 <strong>Evidence Verification</strong><br>Claim-level support checks, agreement, conflicts, and calibrated confidence on every answer.</td>
+    <td>🔍 <strong>Hybrid Search</strong><br>BM25 + embeddings + reranking over local documents, plus optional authority-grouped web search.</td>
   </tr>
   <tr>
-    <td><strong>Benchmark Mode</strong><br>Compare Local vs AI vs Web vs Full retrieval on any question.</td>
-    <td><strong>Transparent Citations</strong><br>Page-level local citations and clickable web sources, exportable to Markdown or PDF.</td>
-    <td><strong>Desktop Ready</strong><br>Streamlit app with a macOS launcher; Hugging Face today, Ollama-ready. Apache-2.0, built in public.</td>
+    <td>📊 <strong>Benchmark Mode</strong><br>Compare Local vs AI vs Web vs Full retrieval on any question.</td>
+    <td>📚 <strong>Transparent Citations</strong><br>Page-level local citations and clickable web sources, exportable to Markdown or PDF.</td>
+    <td>💻 <strong>Desktop Ready</strong><br>Streamlit app with a macOS launcher; Hugging Face today, Ollama-ready. Apache-2.0, built in public.</td>
+  </tr>
+  <tr>
+    <td>📄 <strong>PDF &amp; Office</strong><br>PDF, Word, PowerPoint, and table-aware Excel ingestion.</td>
+    <td>🖼 <strong>OCR</strong><br>Scanned PDFs and image uploads become searchable, citable evidence.</td>
+    <td>💬 <strong>Chat Memory</strong><br>Conversation-aware follow-ups with exportable chat history.</td>
   </tr>
 </table>
+
+## Who Is Verilume For?
+
+- **Researchers and students** who need cited, verifiable answers from papers, theses, and reports.
+- **Engineers and analysts** searching manuals, specs, and internal documentation.
+- **Legal, finance, healthcare, government, and energy teams** who cannot upload sensitive documents to cloud AI services.
+- **Anyone building a private knowledge base** who wants transparent evidence instead of confident-sounding guesses.
 
 ## Screenshots
 
@@ -92,19 +126,21 @@ flowchart TD
     C --> A[Answer + Citations]
 ```
 
+Read more in [docs/architecture.md](docs/architecture.md).
+
 ## Why Verilume Is Different
 
-| Feature | Verilume | ChatGPT | NotebookLM |
-| --- | --- | --- | --- |
-| Local documents | Yes | Partial | Yes |
-| Local execution | Yes | No | No |
-| Optional web search | Yes | Yes | No |
-| Evidence verification | Yes | Partial | Partial |
-| Calibrated confidence scoring | Yes | No | No |
-| Benchmark across retrieval modes | Yes | No | No |
-| Source-authority grouping | Yes | No | No |
-| Citations | Yes | Partial | Yes |
-| Offline mode | Soon | No | No |
+| Feature | Verilume | ChatGPT | NotebookLM | AnythingLLM |
+| --- | --- | --- | --- | --- |
+| Local documents | Yes | Partial | Yes | Yes |
+| Local execution | Yes | No | No | Yes |
+| Optional web search | Yes | Yes | No | Partial |
+| Evidence verification | Yes | Partial | Partial | No |
+| Calibrated confidence scoring | Yes | No | No | No |
+| Benchmark across retrieval modes | Yes | No | No | No |
+| Source-authority grouping | Yes | No | No | No |
+| Page-level citations | Yes | Partial | Yes | Partial |
+| Offline mode | Soon | No | No | Yes |
 
 ## Citations
 
@@ -148,11 +184,13 @@ Web citations use `[W1]`, `[W2]`, `[W3]` and are shown separately as clickable s
 - API
 - Enterprise edition
 
+See [ROADMAP.md](ROADMAP.md) for the full plan.
+
 ## Install
 
 ### Desktop
 
-Download the latest `Verilume-macOS-*.zip` from GitHub Releases, unzip it, and open `Verilume.app`.
+Download the latest `Verilume-macOS-*.zip` from [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases), unzip it, and open `Verilume.app`.
 
 macOS may show a first-run security warning because test builds are not notarized yet. If that happens, Control-click `Verilume.app`, choose Open, then confirm.
 
@@ -178,14 +216,7 @@ python -m pip install "verilume @ git+https://github.com/DamingoNdiwa/verilume.g
 verilume run
 ```
 
-### CLI
-
-```bash
-python -m pip install "verilume @ git+https://github.com/DamingoNdiwa/verilume.git@main"
-verilume run
-```
-
-PyPI is coming soon. Until then, install from GitHub or run from source.
+PyPI is coming this week. Until then, install from GitHub or run from source.
 
 ### Developers
 
@@ -238,7 +269,19 @@ Future comparisons will include LangChain, LlamaIndex, Haystack, and NotebookLM-
 
 ## Documentation
 
-Documentation is being organized around installation, architecture, retrieval, evidence, OCR, and FAQ material.
+- [Installation](docs/installation.md)
+- [Architecture](docs/architecture.md)
+- [Retrieval](docs/retrieval.md)
+- [Evidence](docs/evidence.md)
+- [OCR](docs/ocr.md)
+- [FAQ](docs/faq.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+
+## Cite Verilume
+
+If you use Verilume in your research or software, please cite it using the metadata in [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). A Zenodo DOI is coming soon.
 
 ## About EcosVeri
 

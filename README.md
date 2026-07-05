@@ -142,8 +142,8 @@ flowchart TD
 | Local execution | Yes | No | No | Yes |
 | Optional web search | Yes | Yes | No | Partial |
 | Evidence verification | Yes | Partial | Partial | No |
-| Calibrated confidence scoring | Yes | No | No | No |
-| Benchmark across retrieval modes | Yes | No | No | No |
+| Evidence-capped confidence scoring | Yes | No | No | No |
+| Benchmark across retrieval modes (Local / AI / Web / Full) | Yes | No | No | No |
 | Source-authority grouping | Yes | No | No | No |
 | Page-level citations | Yes | Partial | Yes | Partial |
 | Offline mode | Soon | No | No | Yes |

@@ -12,6 +12,8 @@ Search PDFs, Office documents, scanned files, and images with hybrid retrieval, 
 ![macOS](https://img.shields.io/badge/macOS-available-black)
 ![Windows Soon](https://img.shields.io/badge/Windows-soon-lightgrey)
 ![PyPI Soon](https://img.shields.io/badge/PyPI-this%20week-blue)
+[![Ruff](https://img.shields.io/badge/linting-ruff-261230)](https://github.com/astral-sh/ruff)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](.pre-commit-config.yaml)
 ![Active Development](https://img.shields.io/badge/status-active%20development-f59e0b)
 
 <p align="center">

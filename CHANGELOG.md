@@ -9,6 +9,8 @@
 - Expanded contributor, security, and roadmap documentation.
 - Added a NOTICE file and explicit Apache-2.0 contribution terms in the contributing guide.
 - Trimmed the roadmap and TODO to remaining work only.
+- Bumped the package version to 1.0.0 with Beta status and a Python 3.13 classifier.
+- Added pre-commit hooks and Dependabot updates for pip and GitHub Actions.
 
 ## 0.1.0 - 2026-06-23
 

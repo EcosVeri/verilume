@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Questions & Ideas
+    url: https://github.com/DamingoNdiwa/verilume/discussions
+    about: Ask questions and share ideas in GitHub Discussions.
   - name: Security Reports
     url: https://github.com/DamingoNdiwa/verilume/security/advisories
     about: Please report security issues privately instead of opening public issues.

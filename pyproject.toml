@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "verilume"
-version = "0.1.0"
+version = "1.0.0"
 description = "Privacy-first desktop AI assistant for documents, research, evidence verification, and hybrid local + web search."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,7 +38,7 @@ keywords = [
   "knowledge-management",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: End Users/Desktop",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: Apache Software License",
@@ -48,6 +48,7 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
@@ -79,6 +80,7 @@ Issues = "https://github.com/DamingoNdiwa/verilume/issues"
 mac = ["pyinstaller>=6.10.0"]
 dev = [
   "build>=1.2.1",
+  "pre-commit>=3.7.0",
   "pytest>=8.2.0",
   "ruff>=0.6.0",
   "twine>=5.1.1",
@@ -87,6 +89,7 @@ dev = [
 [dependency-groups]
 dev = [
   "build>=1.2.1",
+  "pre-commit>=3.7.0",
   "pytest>=8.2.0",
   "ruff>=0.6.0",
   "twine>=5.1.1",

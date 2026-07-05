@@ -30,6 +30,12 @@ Run Ruff before submitting:
 python -m ruff check src tests launcher.py scripts
 ```
 
+Optionally, install the pre-commit hooks so this runs automatically:
+
+```bash
+pre-commit install
+```
+
 ## Tests
 
 Run the local validation suite:

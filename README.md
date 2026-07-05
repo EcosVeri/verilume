@@ -2,16 +2,16 @@
 
 **Privacy-first AI research assistant for your local documents.**
 
-Search PDFs, Office documents, scanned files, and images with hybrid retrieval, evidence verification, local LLMs, and optional web search — as a desktop app or a Python package that runs entirely on your machine.
+Search PDFs, Office documents, scanned files, and images with hybrid retrieval, evidence verification, and optional web search — as a desktop app or a Python package. Your documents and search index never leave your machine; answers are generated through Hugging Face or fully locally with Ollama.
 
 > **Evidence First. Answers Second.** Verilume doesn't just answer questions — it evaluates evidence, verifies claims, calibrates confidence, and shows you exactly why each source won.
 
 [![CI](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DamingoNdiwa/verilume/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-green)
-![macOS](https://img.shields.io/badge/macOS-this%20week-black)
-![Windows Soon](https://img.shields.io/badge/Windows-soon-lightgrey)
-![PyPI Soon](https://img.shields.io/badge/PyPI-this%20week-blue)
+![macOS](https://img.shields.io/badge/macOS-coming%20soon-black)
+![Windows Soon](https://img.shields.io/badge/Windows-planned-lightgrey)
+![PyPI Soon](https://img.shields.io/badge/PyPI-coming%20soon-blue)
 [![Ruff](https://img.shields.io/badge/linting-ruff-261230)](https://github.com/astral-sh/ruff)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](.pre-commit-config.yaml)
 ![Active Development](https://img.shields.io/badge/status-active%20development-f59e0b)
@@ -26,9 +26,9 @@ Search PDFs, Office documents, scanned files, and images with hybrid retrieval, 
 
 ## 🚀 Version 1.0 Launch
 
-Verilume is now available as an open-source Python package and desktop app.
+Verilume 1.0 is open source. The Python package installs from GitHub today; the PyPI release and the packaged macOS app are the next two releases.
 
-The project is being transferred to the **EcosVeri** organization, with future releases, documentation, and related apps hosted under the EcosVeri ecosystem. The PyPI package ships this week; until then, install from GitHub below.
+The project is being transferred to the **EcosVeri** organization, with future releases, documentation, and related apps hosted under the EcosVeri ecosystem.
 
 ## Demo
 
@@ -41,25 +41,31 @@ The project is being transferred to the **EcosVeri** organization, with future r
 
 ## Quick Start
 
-**Python package** (PyPI release coming this week — install from GitHub until then):
+**Python package** (not yet on PyPI — install from GitHub):
 
 ```bash
 python -m pip install "verilume @ git+https://github.com/DamingoNdiwa/verilume.git@main"
 verilume run
 ```
 
-**Desktop app**: the v1.0.0 macOS build lands on [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases) this week — download `Verilume-macOS-*.zip`, unzip, and open `Verilume.app`.
+**Desktop app**: the packaged macOS build will be published as v1.0.0 on [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases); until then, install from GitHub as above or run from source.
 
 Then upload documents, build the knowledge base, and ask questions — setup takes about a minute.
+
+### What stays local, what's optional
+
+- **Always local**: your documents, the search index (Chroma), embeddings, caches, chat history, and exports — everything is stored under `~/.verilume` and never uploaded.
+- **Answer generation**: defaults to the Hugging Face Inference API (needs a token). Switch the backend to **Ollama** to generate answers fully on your machine.
+- **Web search**: only runs against a provider you configure (e.g. Tavily) and can be turned off entirely for local-only research.
 
 ## Downloads
 
 | Platform | Status |
 | --- | --- |
-| macOS | v1.0.0 coming this week on [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases) |
-| Windows | Coming Soon |
-| Linux | Coming Soon |
-| Python package | PyPI this week — [install from GitHub](#install-from-github) until then |
+| macOS | v1.0.0 build coming to [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases) |
+| Windows | Planned |
+| Linux | Planned |
+| Python package | Not yet on PyPI — [install from GitHub](#install-from-github) |
 
 ## Why Verilume?
 
@@ -190,7 +196,7 @@ See [ROADMAP.md](ROADMAP.md) for the full plan.
 
 ### Desktop
 
-The v1.0.0 macOS build is published to [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases) this week. Download the latest `Verilume-macOS-*.zip`, unzip it, and open `Verilume.app`.
+The v1.0.0 macOS build will be published on [GitHub Releases](https://github.com/DamingoNdiwa/verilume/releases). Once it is up, download the latest `Verilume-macOS-*.zip`, unzip it, and open `Verilume.app`.
 
 macOS may show a first-run security warning because test builds are not notarized yet. If that happens, Control-click `Verilume.app`, choose Open, then confirm.
 
@@ -209,7 +215,7 @@ python -m pip install "verilume @ git+https://github.com/DamingoNdiwa/verilume.g
 verilume run
 ```
 
-PyPI is coming this week. Until then, install from GitHub or run from source.
+Verilume is not yet on PyPI. Until the PyPI release is published, install from GitHub or run from source.
 
 ### Developers
 

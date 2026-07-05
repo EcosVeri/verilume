@@ -2,17 +2,7 @@
 
 > Privacy-first desktop AI for documents, research, evidence verification, and hybrid local plus web search.
 
-This roadmap is intentionally public. It gives contributors a clean view of what is available now, what comes next, and where the broader EcosVeri ecosystem is heading.
-
-## Version 1.0
-
-- [x] PDF support
-- [x] Word support
-- [x] Excel and table-aware retrieval foundations
-- [x] OCR
-- [x] Hybrid search
-- [x] Citations
-- [x] Desktop app
+This roadmap is intentionally public. It gives contributors a clean view of what comes next and where the broader EcosVeri ecosystem is heading. Shipped work is recorded in the [changelog](CHANGELOG.md).
 
 ## Version 1.1
 
@@ -25,7 +15,6 @@ This roadmap is intentionally public. It gives contributors a clean view of what
 - [ ] PDF preview panel with open-at-page and jump-to-page (see below)
 - [ ] Unified colour language across the UI (see "Design System" below)
 - [ ] Colour-coded search-mode indicator (dot per mode, matching the colour language)
-- [ ] README repositioning: "Evidence-First AI Research Assistant" rather than "local RAG"
 
 ## Version 2.0
 
@@ -34,7 +23,6 @@ This roadmap is intentionally public. It gives contributors a clean view of what
 - [ ] Local embeddings controls
 - [ ] Knowledge graphs
 - [ ] Multi-agent pipeline
-- [ ] Document explorer
 - [ ] Coordinate-accurate source highlighting in the PDF viewer (see below)
 - [ ] Click-to-source navigation from a citation straight into the PDF
 - [ ] Evidence timeline: Query → Retrieval → Reranking → Verification → Answer
@@ -44,56 +32,6 @@ This roadmap is intentionally public. It gives contributors a clean view of what
 The UI and evidence layer are strong; retrieval and query understanding are the
 current accuracy ceiling. This is the plan to make the backend behave like a
 modern retrieval engine rather than a conventional RAG lookup.
-
-**Shipped**
-
-- [x] Evidence-capped confidence — a high-authority source can no longer badge a
-  stale/unsupported answer as "High". A flagged freshness/source conflict caps
-  the badge to Medium; an unsupported answer caps to Low.
-- [x] Freshness ranking (v1) — web sources describing a *completed* term of the
-  queried office ("… from 2013 to 2023", "former …", "stepped down") are
-  downranked below the current holder's page. Query-driven and office-agnostic:
-  the office is read from the query (works for governor / CEO / mayor / king,
-  not just PM/president), and the date-range check is scoped to that role so a
-  current holder's earlier roles are not penalised.
-- [x] Source-quality downranking — stock-photo / aggregator / SEO-farm domains
-  (Getty, Shutterstock, Pinterest, FactSnippet, …) are pushed below authoritative
-  sources, on top of the existing government/academic/news authority tiers.
-- [x] Backend confidence calibration — `response.confidence` (which feeds
-  exports, benchmark tables, and cache policy) is now evidence-capped at the
-  `ask()` boundary, mirroring the UI display cap: conflicts and unsupported
-  verification share a Medium ceiling (strict mode still forces low).
-- [x] Self-reported confidence stripped from answers — the internal
-  "Confidence: X" channel the model and answer builders append to the prose is
-  parsed for calibration and then removed, so the answer body can never
-  contradict the calibrated badge.
-- [x] Current-role candidate election — for "who holds office X now" questions,
-  role-holder evidence is classified by tense: current framing (appositive,
-  "is the <role>", official-profile "Current role" designation, incumbent)
-  always outranks historical appointment sentences ("became <role> in <year>",
-  which every predecessor's biography contains). Ties break on independent
-  domain corroboration, then source authority.
-- [x] Unverified-answer floor — when claim verification supports none of an
-  answer's claims (the "only AI knowledge supports this; treat as unverified"
-  case), the confidence badge is forced to Low in both the backend and the UI,
-  regardless of how authoritative the sources look or how fluent the prose is.
-- [x] Honest benchmark winner — when every benchmark mode returns an
-  insufficient answer, no "best mode" is declared (previously the latency
-  tiebreak crowned the fastest failure, e.g. "best: Local" under an
-  "I could not answer" response).
-- [x] Document-focused suggested prompts — a prompt chip generated from an
-  uploaded document now carries that document's filename through the click into
-  retrieval (`document_filter` on dense/BM25/hybrid search), so the answer
-  comes from the knowledge base instead of model knowledge re-guessing the
-  source from the prompt text. Focused chunks skip identity filtering (the
-  "entity" is the document's own subject) but still pass reranking and
-  relevance gates.
-- [x] Conversation memory (v1) — a question *about* a named person now shifts the
-  pronoun antecedent to that person, so a later "he/she" resolves to who the user
-  actually asked about rather than a sticky role holder from an earlier turn. A
-  pronoun bound to the person in focus no longer triggers a topic switch or gets
-  collapsed into a generic role question. (Explicit role follow-ups still resolve
-  via the roles map, unchanged.)
 
 **Query understanding**
 

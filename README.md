@@ -9,7 +9,7 @@ Search PDFs, Office documents, scanned files, and images with hybrid retrieval, 
 [![CI](https://github.com/EcosVeri/verilume/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/EcosVeri/verilume/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-green)
-![macOS](https://img.shields.io/badge/macOS-coming%20soon-black)
+[![macOS](https://img.shields.io/badge/macOS-download-black)](https://github.com/EcosVeri/verilume/releases/latest)
 ![Windows Soon](https://img.shields.io/badge/Windows-planned-lightgrey)
 ![PyPI Soon](https://img.shields.io/badge/PyPI-coming%20soon-blue)
 [![Ruff](https://img.shields.io/badge/linting-ruff-261230)](https://github.com/astral-sh/ruff)
@@ -26,7 +26,7 @@ Search PDFs, Office documents, scanned files, and images with hybrid retrieval, 
 
 ## 🚀 Version 1.0 Launch
 
-Verilume 1.0 is open source. The Python package installs from GitHub today; the PyPI release and the packaged macOS app are the next two releases.
+Verilume 1.0 is out: the macOS desktop app is on [GitHub Releases](https://github.com/EcosVeri/verilume/releases/latest), and the Python package installs from GitHub today. The PyPI release is next.
 
 Verilume is developed under the **EcosVeri** organization, with future releases, documentation, and related apps hosted under the EcosVeri ecosystem.
 
@@ -48,7 +48,7 @@ python -m pip install "verilume @ git+https://github.com/EcosVeri/verilume.git@m
 verilume run
 ```
 
-**Desktop app**: the packaged macOS build will be published as v1.0.0 on [GitHub Releases](https://github.com/EcosVeri/verilume/releases); until then, install from GitHub as above or run from source.
+**Desktop app**: download `Verilume-macOS-arm64.zip` from the [v1.0.0 release](https://github.com/EcosVeri/verilume/releases/latest), unzip, and open `Verilume.app`.
 
 Then upload documents, build the knowledge base, and ask questions — setup takes about a minute.
 
@@ -62,7 +62,7 @@ Then upload documents, build the knowledge base, and ask questions — setup tak
 
 | Platform | Status |
 | --- | --- |
-| macOS | v1.0.0 build coming to [GitHub Releases](https://github.com/EcosVeri/verilume/releases) |
+| macOS (Apple Silicon) | [v1.0.0 on GitHub Releases](https://github.com/EcosVeri/verilume/releases/latest) |
 | Windows | Planned |
 | Linux | Planned |
 | Python package | Not yet on PyPI — [install from GitHub](#install-from-github) |
@@ -196,9 +196,9 @@ See [ROADMAP.md](ROADMAP.md) for the full plan.
 
 ### Desktop
 
-The v1.0.0 macOS build will be published on [GitHub Releases](https://github.com/EcosVeri/verilume/releases). Once it is up, download the latest `Verilume-macOS-*.zip`, unzip it, and open `Verilume.app`.
+Download the latest `Verilume-macOS-*.zip` from [GitHub Releases](https://github.com/EcosVeri/verilume/releases/latest), unzip it, and open `Verilume.app`.
 
-macOS may show a first-run security warning because test builds are not notarized yet. If that happens, Control-click `Verilume.app`, choose Open, then confirm.
+macOS may show a first-run security warning because builds are not notarized yet. If that happens, Control-click `Verilume.app`, choose Open, then confirm.
 
 On macOS, you can also double-click the source launcher:
 

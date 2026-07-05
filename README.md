@@ -91,7 +91,7 @@ Everything is designed around privacy, transparency and reproducible answers.
   <tr>
     <td>📊 <strong>Benchmark Mode</strong><br>Compare Local vs AI vs Web vs Full retrieval on any question.</td>
     <td>📚 <strong>Transparent Citations</strong><br>Page-level local citations and clickable web sources, exportable to Markdown or PDF.</td>
-    <td>💻 <strong>Desktop Ready</strong><br>Streamlit app with a macOS launcher; Hugging Face today, Ollama-ready. Apache-2.0, built in public.</td>
+    <td>💻 <strong>Desktop Ready</strong><br>Streamlit app with a macOS launcher; Hugging Face or Ollama generation backends. Apache-2.0, built in public.</td>
   </tr>
   <tr>
     <td>📄 <strong>PDF &amp; Office</strong><br>PDF, Word, PowerPoint, and table-aware Excel ingestion.</td>
@@ -208,7 +208,14 @@ Verilume.command
 
 ### Install from GitHub
 
-Install the latest committed version from this repository:
+Install the v1.0.0 release:
+
+```bash
+python -m pip install "verilume @ git+https://github.com/EcosVeri/verilume.git@v1.0.0"
+verilume run
+```
+
+Or install the latest committed version:
 
 ```bash
 python -m pip install "verilume @ git+https://github.com/EcosVeri/verilume.git@main"

@@ -23,7 +23,6 @@ model discovery, and offline-friendly use.
 
 - Show clearly whether Ollama is installed and running.
 - Show the Ollama models already available in the local Ollama runtime.
-- If a selected Ollama model is missing, show the exact command to install it.
 - Add a one-click local-only mode that uses Ollama and turns web search off.
 - Explain Ollama in the app as a local AI runtime.
 
@@ -41,11 +40,8 @@ model discovery, and offline-friendly use.
 - Tune ranking thresholds using real document collections.
 - Improve entity verification for difficult person, company, and same-name lookups.
 - Improve query decomposition for complex multi-part questions.
-- Add two-stage retrieval: choose the best document first, then the best chunks.
-- Add persisted document summaries for summary-first retrieval.
 - Add broader semantic duplicate clustering across mirrored or repeated web sources.
 - Expand answer verification tests for edge cases and conflicting evidence.
-- Add clearer user messages when evidence is weak or incomplete.
 
 ---
 
@@ -61,7 +57,6 @@ model discovery, and offline-friendly use.
 
 - Add conversation search.
 - Add source filtering.
-- Add a document explorer.
 - Add clickable page-level highlights for local citations.
 - Add search suggestions and autocomplete.
 - Add keyboard shortcuts.

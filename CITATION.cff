@@ -1,0 +1,52 @@
+cff-version: 1.2.0
+title: "Verilume: Privacy-first AI research assistant for your local documents"
+message: >
+  If you use Verilume in your research or software,
+  please cite this project using the metadata below.
+type: software
+authors:
+  - family-names: Mingo Ndiwago
+    given-names: Damian
+    affiliation: EcosVeri
+doi: 10.5281/zenodo.21210006
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.21210006
+    description: Concept DOI for all versions.
+  - type: doi
+    value: 10.5281/zenodo.21210007
+    description: DOI for this version.
+repository-code: https://github.com/DamingoNdiwa/verilume
+url: https://github.com/DamingoNdiwa/verilume
+license: Apache-2.0
+version: 1.0.0
+date-released: 2026-07-05
+abstract: >
+  Verilume is an open-source, local-first AI assistant for
+  retrieval-augmented generation (RAG), hybrid web search,
+  multimodal document understanding, and transparent source attribution.
+  It combines local knowledge bases with trusted web retrieval to provide
+  accurate, explainable, and privacy-conscious AI assistance.
+keywords:
+  - Retrieval-Augmented Generation
+  - RAG
+  - Artificial Intelligence
+  - LLM
+  - Knowledge Base
+  - Hybrid Search
+  - Information Retrieval
+  - Document Intelligence
+  - OCR
+  - Vision Language Models
+  - Multimodal AI
+preferred-citation:
+  type: software
+  authors:
+    - family-names: Mingo Ndiwago
+      given-names: Damian
+      affiliation: EcosVeri
+  title: "Verilume: Privacy-first AI research assistant for your local documents"
+  year: 2026
+  doi: 10.5281/zenodo.21210006
+  repository-code: https://github.com/DamingoNdiwa/verilume
+  url: https://github.com/DamingoNdiwa/verilume

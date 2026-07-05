@@ -126,8 +126,6 @@ flowchart TD
     C --> A[Answer + Citations]
 ```
 
-Read more in [docs/architecture.md](docs/architecture.md).
-
 ## Why Verilume Is Different
 
 | Feature | Verilume | ChatGPT | NotebookLM | AnythingLLM |
@@ -269,19 +267,16 @@ Future comparisons will include LangChain, LlamaIndex, Haystack, and NotebookLM-
 
 ## Documentation
 
-- [Installation](docs/installation.md)
-- [Architecture](docs/architecture.md)
-- [Retrieval](docs/retrieval.md)
-- [Evidence](docs/evidence.md)
-- [OCR](docs/ocr.md)
-- [FAQ](docs/faq.md)
+Documentation covering installation, architecture, retrieval, evidence, OCR, and FAQ material is being organized and will be published under the EcosVeri ecosystem. In the meantime:
+
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
+- [Roadmap](ROADMAP.md)
 - [Security policy](SECURITY.md)
 
 ## Cite Verilume
 
-If you use Verilume in your research or software, please cite it using the metadata in [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button). A Zenodo DOI is coming soon.
+Citation metadata and a Zenodo DOI are coming soon.
 
 ## About EcosVeri
 
